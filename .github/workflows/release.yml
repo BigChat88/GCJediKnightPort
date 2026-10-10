@@ -1,0 +1,102 @@
+name: release
+
+# Every pull request builds the engine (openjkdf2.dol + apploader) as a check.
+# A push to main (a direct commit or a merged pull request) also publishes a
+# GitHub Release named after VERSION. Its main asset is a self-contained
+# "everything you need to build the disc images" bundle: drop in your own CD
+# images, run build.cmd / build.sh -- no Docker, no GameCube toolchain needed.
+# A second asset holds the .elf/.map, to symbolicate crash dumps from hardware.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      # devkitPPC r50 / libogc 3.1.0 -- the toolchain the port is tested with.
+      # Bump deliberately: libogc changes have bitten audio and the memory card.
+      image: devkitpro/devkitppc@sha256:44cb1a920e1ec3ec7c06767493c3b85f8d643d6137cc4661f0201895ac6e4967
+
+    steps:
+      - name: Install build deps
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3-venv python3-pip git zip rsync ca-certificates
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trust the workspace
+        run: git config --global --add safe.directory '*'
+
+      - name: Version
+        id: ver
+        run: |
+          VER="$(tr -d ' \r\n' < VERSION)"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER"    >> "$GITHUB_OUTPUT"
+
+      - name: Build the engine
+        working-directory: OpenJKDF2
+        env:
+          GC_PORT_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          ./build_gamecube.sh
+          ls -l build_gamecube/openjkdf2.dol build_gamecube/apploader.img
+
+      - name: Stage the bundle
+        id: stage
+        run: |
+          set -eu
+          NAME="GCJediKnight-${{ steps.ver.outputs.version }}"
+          DEST="stage/$NAME"
+          mkdir -p "$DEST/engine" "$DEST/OpenJKDF2/packaging"
+          # what pack_iso.py needs: the launchers, the docs and the packaging scripts
+          git ls-files -z build.cmd build.sh VERSION README.md LICENSE requirements.txt \
+              tools gamedata/README.md output/README.md OpenJKDF2/packaging/gamecube \
+            | rsync -a --files-from=- --from0 ./ "$DEST/"
+          cp OpenJKDF2/build_gamecube/openjkdf2.dol OpenJKDF2/build_gamecube/apploader.img "$DEST/engine/"
+          {
+            echo "GCJediKnight ${{ steps.ver.outputs.version }}"
+            echo "commit:  ${GITHUB_SHA}"
+            echo "ref:     ${GITHUB_REF}"
+            echo "run:     ${GITHUB_RUN_NUMBER}"
+            echo "built:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$DEST/BUILD_INFO.txt"
+          ( cd stage && zip -qr "../$NAME.zip" "$NAME" )
+          # debug symbols for the same build
+          mkdir -p "stage/$NAME-debug"
+          cp OpenJKDF2/build_gamecube/openjkdf2.elf "$DEST/BUILD_INFO.txt" "stage/$NAME-debug/"
+          cp OpenJKDF2/build_gamecube/*.map "stage/$NAME-debug/" 2>/dev/null || true
+          ( cd stage && zip -qr "../$NAME-debug.zip" "$NAME-debug" )
+          ls -l "$NAME.zip" "$NAME-debug.zip"
+          echo "asset=$NAME.zip"        >> "$GITHUB_OUTPUT"
+          echo "debug=$NAME-debug.zip"  >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GCJediKnight-${{ steps.ver.outputs.version }}-run${{ github.run_number }}
+          path: |
+            ${{ steps.stage.outputs.asset }}
+            ${{ steps.stage.outputs.debug }}
+          retention-days: 14
+
+      - name: Publish release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: GCJediKnight ${{ steps.ver.outputs.version }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            ${{ steps.stage.outputs.asset }}
+            ${{ steps.stage.outputs.debug }}

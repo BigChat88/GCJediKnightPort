@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Debug-signing entitlement: lets lldb/Xcode attach to the process. Enough
+	     for the Simulator and for an ad-hoc/personal-team sideload. A real
+	     distribution build needs application-identifier + team-identifier from
+	     the provisioning profile; pass your own file via IOS_ENTITLEMENTS. -->
+	<key>get-task-allow</key>
+	<true/>
+</dict>
+</plist>

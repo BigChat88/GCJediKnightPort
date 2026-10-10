@@ -1,0 +1,1719 @@
+#include "stdPlatform.h"
+
+#include "Win95/std.h"
+#include "General/stdMemory.h"
+#include "Main/jkQuakeConsole.h"
+
+#ifdef TARGET_TWL
+#include <nds.h>
+#include <sys/stat.h>
+#include "Platform/TWL/dlmalloc.h"
+#endif
+
+#ifdef TARGET_GAMECUBE
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+#ifdef TARGET_DREAMCAST
+#include <malloc.h>                  // KOS/newlib memalign for the overflow fallback
+#include <unistd.h>                  // sbrk (current heap break, for free-RAM stats)
+#include <arch/arch.h>              // _arch_mem_top (top of system RAM)
+#include "Platform/TWL/dlmalloc.h"   // shared dlmalloc (ONLY_MSPACES) for the engine heap
+#include "Platform/Dreamcast/dcStorage.h" // Added: writable-storage path redirection
+#endif
+
+#ifdef PLATFORM_POSIX
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+#include <math.h>
+#include <string.h>
+
+#include "external/fcaseopen/fcaseopen.h"
+#endif
+
+#include "SDL2_helper.h"
+
+#ifdef PLATFORM_POSIX
+uint32_t Linux_TimeMs()
+{
+    // TWL has hardware timers we can use for accurate ms timing
+#if defined(TARGET_TWL)
+    //16756
+    //return (uint32_t)(((TIMER1_DATA*(1<<16))+TIMER0_DATA)/32.7285);
+    return (uint32_t)(((uint64_t)((TIMER1_DATA*(1<<16))+TIMER0_DATA)<<9)/16757);
+#else
+
+    struct timespec _t;
+
+#if defined(_MSC_VER) && !defined(WIN64_MINGW)
+    timespec_get(&_t, TIME_UTC);
+#else
+    clock_gettime(CLOCK_MONOTONIC, &_t);
+#endif
+
+    return _t.tv_sec*1000 + lround(_t.tv_nsec/1.0e6);
+#endif
+}
+
+uint64_t Linux_TimeUs()
+{
+#if defined(TARGET_TWL)
+    //return (uint64_t)((flex64_t)((TIMER1_DATA*(1<<16))+TIMER0_DATA)/0.0327285);
+    return (uint64_t)(((uint64_t)((TIMER1_DATA*(1<<16))+TIMER0_DATA)<<19)/17159);
+#else
+    struct timespec _t;
+
+#if defined(_MSC_VER) && !defined(WIN64_MINGW)
+    timespec_get(&_t, TIME_UTC);
+#else
+    clock_gettime(CLOCK_MONOTONIC, &_t);
+#endif
+
+    return _t.tv_sec*1000000 + lround(_t.tv_nsec/1.0e3);
+#endif
+}
+
+static stdFile_t Linux_stdFileOpen(const char* fpath, const char* mode)
+{
+    char tmp[512];
+#ifdef TARGET_DREAMCAST
+    // Added: read-only assets live on the GD-ROM; the CWD is writable storage.
+    // Route relative asset paths back to the asset root (writable data is left
+    // relative to the CWD). See dcStorage.
+    char dcAsset[512];
+    if (dcStorage_ResolveAssetPath(fpath, dcAsset, sizeof(dcAsset)))
+        fpath = dcAsset;
+#endif
+    size_t len = strlen(fpath);
+
+    if (len > 512) {
+        len = 512;
+    }
+    _strncpy(tmp, fpath, sizeof(tmp));
+
+#ifndef WIN64_STANDALONE
+    for (int i = 0; i < len; i++)
+    {
+        if (tmp[i] == '\\') {
+            tmp[i] = '/';
+        }
+    }
+#endif
+
+#ifdef WIN32
+for (int i = 0; i < len; i++)
+{
+    if (tmp[i] == '/') {
+        tmp[i] = '\\';
+    }
+}
+#endif
+
+    //printf("open: %s %s\n", fpath, mode);
+
+    stdFile_t ret;
+#ifndef TARGET_RETRO_HOMEBREW
+    ret = (stdFile_t)fcaseopen(tmp, mode);
+#else
+    if (mode[0] != 'w') {
+        struct stat statstuff;
+        int exists = stat(tmp, &statstuff) >= 0;
+        if (exists) {
+            ret = (stdFile_t)fopen(tmp, mode);
+        }
+        else {
+            return 0;
+        }
+    }
+    else {
+        ret = (stdFile_t)fopen(tmp, mode);
+    }
+#endif
+    //printf("File open `%s`->`%s` mode `%s`, ret %x\n", fpath, tmp, mode, ret);
+    return ret;
+}
+
+static int Linux_stdFileClose(stdFile_t hGobFile)
+{
+    int ret = fclose((FILE*)hGobFile);
+
+#ifdef ARCH_WASM
+    EM_ASM(
+        FS.syncfs(false, function (err) {
+            // Error
+        });
+    );
+#endif // ARCH_WASM
+
+    return ret;
+}
+
+
+static size_t Linux_stdFileRead(stdFile_t hGobFile, void* dst, size_t len)
+{
+#ifdef TARGET_TWL
+    if (!dst || !len) return 0;
+#endif
+    size_t val =  fread(dst, 1, len, (FILE*)hGobFile);
+
+    return val;
+}
+
+static size_t Linux_stdFileWrite(stdFile_t hGobFile, void* dst, size_t len)
+{
+#ifdef TARGET_TWL
+    if (!dst || !len) return 0;
+#endif
+    return fwrite(dst, 1, len, (FILE*)hGobFile);
+}
+
+static const char* Linux_stdFileGets(stdFile_t hGobFile, char* dst, size_t len)
+{
+    // Drops static.jkl pPuppetClass parsing from 21.87s to 13.578s due to slow locks on getc
+    // Added: not on the GameCube: the seek back after every line throws away the
+    // stdio buffer, so each line re-read a whole buffer (1.3 GB copied to load
+    // level 1). newlib's fgets scans the buffer directly.
+#if defined(TARGET_RETRO_HOMEBREW) && !defined(TARGET_GAMECUBE)
+    char tmp[128];
+    const char* retval = dst;
+    if (!dst || !len) return 0;
+    while(1) {
+        size_t res = fread(tmp, 1, sizeof(tmp), (FILE*)hGobFile);
+        if (!res) break;
+        for (size_t i = 0; i < res; i++) {
+            char val = tmp[i];
+            //if (val == '\r') continue;
+            *dst++ = val;
+            len--;
+            if (val == '\n' || len == 1) {
+                fseek((FILE*)hGobFile, (i+1)-res, SEEK_CUR);
+                *dst++ = 0;
+                return retval;
+            }
+            if (!val) {
+                fseek((FILE*)hGobFile, (i+1)-res, SEEK_CUR);
+                return retval;
+            }
+        }
+    }
+#else
+    return fgets(dst, len, (FILE*)hGobFile);
+#endif
+}
+
+static const char16_t* Linux_stdFileGetws(stdFile_t hGobFile, char16_t* dst, size_t len)
+{
+    // Can't use fgetws: it operates on the platform's native wchar_t (4 bytes
+    // on POSIX), but our strings are fixed 16-bit char16_t. Read UTF-16LE
+    // characters one at a time instead.
+    if (!len) return NULL;
+    size_t i = 0;
+    while (i < len - 1) {
+        char16_t ch = 0;
+        if (fread(&ch, sizeof(char16_t), 1, (FILE*)hGobFile) != 1) {
+            if (i == 0) return NULL;
+            break;
+        }
+        dst[i++] = ch;
+        if (ch == u'\n') break;
+    }
+    dst[i] = u'\0';
+    return dst;
+}
+
+static int Linux_stdFseek(stdFile_t hGobFile, int a, int b)
+{
+    //printf("fseek? %x %x\n", a, b);
+    int ret = fseek((FILE*)hGobFile, a, b);
+    //printf("fseek %x\n", ret);
+    return ret;
+}
+
+static int Linux_stdFtell(stdFile_t hGobFile)
+{
+    return ftell((FILE*)hGobFile);
+}
+
+#ifdef TARGET_GAMECUBE
+// Added: out of memory -> give back the GPU texture copies and try once more.
+extern void std3D_GcReleaseMemory(void);
+extern int gcSystem_IsMainThread(void);
+extern int sithSound_FreeUpMemory(uint32_t numBytesNeeded);
+static void* Linux_GcRetryAlloc(void* (*fn)(void*, size_t), void* ptr, size_t len)
+{
+    if (!gcSystem_IsMainThread()) return NULL;
+    std3D_GcReleaseMemory();
+    void* ret = fn(ptr, len);
+    if (!ret) {
+        // Then sounds that aren't playing (reloaded from the disc cache on demand),
+        // and wait for their voices to really let go of the PCM.
+        extern void stdSound_GcReclaim(void);
+        sithSound_FreeUpMemory((uint32_t)len + 0x80000);
+        { extern uint32_t sithSound_GcFreeAllIdle(void); sithSound_GcFreeAllIdle(); }
+        stdSound_GcReclaim();
+        ret = fn(ptr, len);
+    }
+    return ret;
+}
+static void* Linux_GcMalloc(void* unused, size_t len) { return malloc(len); }
+static void* Linux_GcRealloc(void* ptr, size_t len) { return realloc(ptr, len); }
+#endif
+
+#ifdef TARGET_GAMECUBE
+uint32_t stdPlatform_gcLastFailedAlloc = 0; // Added: diagnostics (level load errors)
+uint32_t stdPlatform_gcLargestAtFail = 0;   // largest free block at that moment
+// The same just before the retry (texture/sound caches still in memory), which
+// branch failed, and whether the retry could run (main thread only).
+uint32_t stdPlatform_gcLargestPreRetry = 0;
+char     stdPlatform_gcFailPath = 0;
+int      stdPlatform_gcFailMain = 0;
+static void Linux_GcNoteFirstFail(void)
+{
+    extern volatile char gcHeap_failPath;
+    extern uint32_t gcSystem_LargestFreeBytes(void);
+    stdPlatform_gcFailPath = gcHeap_failPath;
+    stdPlatform_gcFailMain = gcSystem_IsMainThread();
+    stdPlatform_gcLargestPreRetry = gcSystem_LargestFreeBytes();
+}
+#endif
+
+static void* Linux_alloc(uint32_t len)
+{
+    void* ret = malloc(len);
+#ifdef TARGET_GAMECUBE
+    if (!ret && len) Linux_GcNoteFirstFail();
+    if (!ret && len) ret = Linux_GcRetryAlloc(Linux_GcMalloc, NULL, len);
+    if (!ret && len) { extern uint32_t gcSystem_LargestFreeBytes(void); stdPlatform_gcLastFailedAlloc = len; stdPlatform_gcLargestAtFail = gcSystem_LargestFreeBytes(); }
+#endif
+    if (ret) {
+        memset(ret, 0, len);
+    }
+    return ret;
+}
+
+static void Linux_free(void* ptr)
+{
+    return free(ptr);
+}
+
+static void* Linux_realloc(void* ptr, uint32_t len)
+{
+#ifdef TARGET_GAMECUBE
+    void* ret = realloc(ptr, len);
+    if (!ret && len) Linux_GcNoteFirstFail();
+    if (!ret && len) ret = Linux_GcRetryAlloc(Linux_GcRealloc, ptr, len);
+    if (!ret && len) { extern uint32_t gcSystem_LargestFreeBytes(void); stdPlatform_gcLastFailedAlloc = len; stdPlatform_gcLargestAtFail = gcSystem_LargestFreeBytes(); }
+    return ret;
+#else
+    return realloc(ptr, len);
+#endif
+}
+
+#ifdef TARGET_TWL
+
+#define ALLOC_ALIGN (0x4)
+
+//#define MEM_CHECKING
+#define MEM_CHECKING_ADD (0x10)
+#define MEM_CHECKING_ZERO_VAL (0x00)
+#define MEM_CHECKING_VAL (0xAA)
+#define MEM_CHECKING_VAL_FREE (0x55)
+
+int heapSuggestion = HEAP_ANY;
+
+size_t trackingAllocsA = 0;
+size_t trackingAllocsAReal = 0;
+size_t trackingAllocsB = 0;
+size_t trackingAllocsBReal = 0;
+size_t trackingAllocsBLimit = 0;
+size_t trackingAllocsC = 0;
+size_t trackingAllocsCReal = 0;
+size_t activeAllocs = 0;
+
+mspace openjkdf2_mem_main_mspace = NULL;
+mspace openjkdf2_mem_alt_mspace = NULL;
+mspace openjkdf2_mem_nwram_mspace = NULL;
+
+intptr_t openjkdf2_mem_alt_mspace_start;
+intptr_t openjkdf2_mem_alt_mspace_end;
+intptr_t openjkdf2_mem_main_mspace_start;
+intptr_t openjkdf2_mem_main_mspace_end;
+
+int openjkdf2_mem_alt_mspace_wordonly = 0;
+
+typedef struct MemTrackingHeader {
+    uint32_t memtype_size;
+} tMemTrackingHeader;
+
+#define HDR_MEMTYPE_RD(p) (((p)->memtype_size >> 24) & 0xFF)
+#define HDR_SIZE_RD(p) ((p)->memtype_size & 0xFFFFFF)
+#define HDR_SET(p,t,s) ((p)->memtype_size=(((t&0xFF)<<24) | (s & 0xFFFFFF)))
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern void *__real_malloc(size_t size);
+extern void __real_free(void *ptr);
+extern void* __real_realloc(void *ptr, size_t len);
+extern void *__real_calloc(size_t num, size_t size);
+
+#ifdef __cplusplus
+}
+#endif
+
+static int TWL_suggestHeap(int which) {
+    int prev = heapSuggestion;
+    heapSuggestion = which;
+    return prev;
+}
+
+
+static void* TWL_mspace_alloc(mspace m, uint8_t marker, uint32_t len, uint32_t lenAlign, size_t* pTrackingAllocs, size_t* pTrackingAllocsReal) {
+    if (!m) return NULL;
+
+    void* ret = mspace_malloc(m, lenAlign);//malloc(len + sizeof(tMemTrackingHeader));
+    if (ret) {
+        *pTrackingAllocs += len;
+        *pTrackingAllocsReal += lenAlign;
+        activeAllocs += 1;
+        //printf("%p %x\n", ret, len + sizeof(tMemTrackingHeader));
+        // Added: word-safe fills. BlocksDS memset (__ndsabi_memset1) byte-fills,
+        // and the slot-2 bus DROPS byte writes -- every extram allocation was
+        // handed out unzeroed, corrupting everything that assumes cleared memory.
+#ifdef MEM_CHECKING
+        stdPlatform_Memset32(ret, MEM_CHECKING_ZERO_VAL, len);
+        stdPlatform_Memset32((uint8_t*)ret+len, MEM_CHECKING_VAL, lenAlign-len);
+#else
+        stdPlatform_Memzero32(ret, len);
+#endif
+        HDR_SET((tMemTrackingHeader*)ret, marker, len);
+        return (void*)(((intptr_t)ret) + sizeof(tMemTrackingHeader));
+    }
+    return NULL;
+}
+
+static void TWL_mspace_free(mspace m, tMemTrackingHeader* pHdr, uint32_t size, uint32_t sizeAlign, size_t* pTrackingAllocs, size_t* pTrackingAllocsReal) {
+    void* ptr = (void*)(pHdr+1);
+    *pTrackingAllocs -= size;
+    *pTrackingAllocsReal -= sizeAlign;
+    activeAllocs -= 1;
+    HDR_SET(pHdr, 0xDE, 0);
+#ifdef MEM_CHECKING
+    stdPlatform_Memset32(ptr, MEM_CHECKING_VAL_FREE, sizeAlign); // Added: word-safe
+#endif
+    mspace_free(m, (void*)pHdr);
+}
+
+static void* TWL_mspace_realloc(mspace m, uint8_t marker, tMemTrackingHeader* pHdr, uint32_t oldSize, uint32_t sizeAlign, uint32_t len, uint32_t lenAlign, size_t* pTrackingAllocs, size_t* pTrackingAllocsReal) {
+    void* ptr = (void*)(pHdr+1);
+
+    // TODO: force fallback if heapSuggest doesn't match what we have
+
+    void* ret = mspace_realloc(m, (void*)pHdr, lenAlign);
+    if (ret) {
+        pHdr = (tMemTrackingHeader*)ret;
+        *pTrackingAllocs -= oldSize;
+        *pTrackingAllocs += len;
+        *pTrackingAllocsReal -= sizeAlign;
+        *pTrackingAllocsReal += lenAlign;
+#ifdef MEM_CHECKING
+        if (lenAlign > sizeAlign && len > oldSize) {
+            stdPlatform_Memset32((uint8_t*)ret + sizeAlign, MEM_CHECKING_VAL, lenAlign - sizeAlign); // Added: word-safe
+        }
+#endif
+        HDR_SET(pHdr, marker, len);
+        return (void*)((intptr_t)ret + sizeof(tMemTrackingHeader));
+    }
+
+    printf("realloc Fallback %x??\n", marker);
+
+    // Fallback option
+    ret = Linux_alloc(len);
+    if (ret) {
+        memcpy(ret, ptr, oldSize);
+        Linux_free(ptr);
+        return ret;
+    }
+
+    printf("aaaaaaa realloc fail\n");
+    return NULL;
+}
+
+static void* TWL_alloc(uint32_t len)
+{
+    static BOOL bDontTryAgain = 0;
+    if (!len) {
+        return NULL;
+    }
+    // Why?
+    uint32_t lenAlign = ((len + sizeof(tMemTrackingHeader)) + (ALLOC_ALIGN-1)) & ~(ALLOC_ALIGN-1);
+#ifdef MEM_CHECKING
+    lenAlign += MEM_CHECKING_ADD;
+#endif
+    void* ret = NULL;
+
+    // TODO wrap system init or something for this
+    if (!trackingAllocsBLimit) {
+        trackingAllocsBLimit = (intptr_t)getHeapLimit() - (intptr_t)getHeapEnd();
+        void* mainBase = NULL;
+        while (!mainBase) {
+            mainBase = __real_malloc(trackingAllocsBLimit);
+            if (!mainBase) {
+                trackingAllocsBLimit -= 0x1000;
+            }
+        }
+        openjkdf2_mem_main_mspace_start = (intptr_t)mainBase;
+        openjkdf2_mem_main_mspace_end = (intptr_t)mainBase + trackingAllocsBLimit;
+        //printf("mainBase %p\n", mainBase);
+        openjkdf2_mem_main_mspace = create_mspace_with_base(mainBase, trackingAllocsBLimit, 0);
+
+        // Also map NWRAM
+        if (isDSiMode()) {
+            intptr_t nwramStart = 0x03000000;
+            intptr_t nwramEnd = 0x03040000 + 0x40000;
+            nwramSetBlockMapping(NWRAM_BLOCK_B, 0x03000000, 256 * 1024,
+                         NWRAM_BLOCK_IMAGE_SIZE_256K);
+            nwramSetBlockMapping(NWRAM_BLOCK_C, 0x03040000, 256 * 1024,
+                         NWRAM_BLOCK_IMAGE_SIZE_256K);
+            openjkdf2_mem_nwram_mspace = create_mspace_with_base((void*)nwramStart, nwramEnd-nwramStart, 0);
+        }
+    }
+
+    // Go to NWRAM for fast heap suggestions
+    if (heapSuggestion == HEAP_FAST) {
+        if (ret = TWL_mspace_alloc(openjkdf2_mem_nwram_mspace, 0xD5, len, lenAlign, &trackingAllocsC, &trackingAllocsCReal)) {
+            return ret;
+        }
+    }
+
+    if (heapSuggestion == HEAP_WORD_ADDRESSABLE && openjkdf2_mem_alt_mspace_wordonly) {
+        if(ret = TWL_mspace_alloc(openjkdf2_mem_alt_mspace, 0xF0, len, lenAlign, &trackingAllocsA, &trackingAllocsAReal)) {
+            return ret;
+        }
+    }
+    else if (!openjkdf2_mem_alt_mspace_wordonly) {
+        if(ret = TWL_mspace_alloc(openjkdf2_mem_alt_mspace, 0xF0, len, lenAlign, &trackingAllocsA, &trackingAllocsAReal)) {
+            return ret;
+        }
+    }
+
+    if (trackingAllocsBReal + lenAlign < trackingAllocsBLimit) {
+        if (ret = TWL_mspace_alloc(openjkdf2_mem_main_mspace, 0xDA, len, lenAlign, &trackingAllocsB, &trackingAllocsBReal)) {
+            return ret;
+        }
+    }
+
+    if (heapSuggestion != HEAP_AUDIO) {
+        if (ret = TWL_mspace_alloc(openjkdf2_mem_nwram_mspace, 0xD5, len, lenAlign, &trackingAllocsC, &trackingAllocsCReal)) {
+            return ret;
+        }
+    }
+
+    //uint32_t freeEst = (intptr_t)getHeapLimit() - (intptr_t)getHeapEnd();
+
+    printf("already out? %zx %zx %zx\n", trackingAllocsA, trackingAllocsB, trackingAllocsC);
+
+    // Emergency freeing measures
+    if (!bDontTryAgain) {
+        extern int sithSound_FreeUpMemory(uint32_t);
+        extern int rdMaterial_PurgeEntireMaterialCache();
+        if (!sithSound_FreeUpMemory(len)) {
+            if (!rdMaterial_PurgeMaterialCache()) {
+                rdMaterial_PurgeEntireMaterialCache();
+            }
+        }
+        
+        bDontTryAgain = 1;
+        ret = TWL_alloc(len);
+        bDontTryAgain = 0;
+    }
+
+    if (!ret) {
+        printf("Failed to allocate %x bytes...\n", len);
+        //while (1) {}
+        return NULL;
+    }
+    
+    return ret;
+}
+
+static void TWL_free(void* ptr)
+{
+    if (!ptr) {
+        return;
+    }
+
+    tMemTrackingHeader* pHdr = (tMemTrackingHeader*)((intptr_t)ptr - sizeof(tMemTrackingHeader));
+    uint32_t sizeAlign = ((HDR_SIZE_RD(pHdr) + sizeof(tMemTrackingHeader)) + (ALLOC_ALIGN-1)) & ~(ALLOC_ALIGN-1);
+    uint32_t size = HDR_SIZE_RD(pHdr);
+    uint8_t memtype = HDR_MEMTYPE_RD(pHdr);
+
+#ifdef MEM_CHECKING
+    sizeAlign += MEM_CHECKING_ADD;
+#endif
+
+#ifdef MEM_CHECKING
+    for (uint32_t i = size; i < sizeAlign - sizeof(tMemTrackingHeader); i++) {
+        if (*((uint8_t*)ptr + i) != MEM_CHECKING_VAL) {
+            printf("OOB write!! %p %x %x\n", pHdr, size, sizeAlign - sizeof(tMemTrackingHeader));
+            while(1);
+        }
+    }
+#endif
+
+    if (memtype == 0xF0 /*|| ((intptr_t)pHdr >= openjkdf2_mem_alt_mspace_start && (intptr_t)pHdr <= openjkdf2_mem_alt_mspace_end)*/) {
+        TWL_mspace_free(openjkdf2_mem_alt_mspace, pHdr, size, sizeAlign, &trackingAllocsA, &trackingAllocsAReal);
+        return;
+    }
+    else if (HDR_MEMTYPE_RD(pHdr) == 0xDA /*|| ((intptr_t)pHdr >= openjkdf2_mem_main_mspace_start && (intptr_t)pHdr <= openjkdf2_mem_main_mspace_end)*/) {
+        TWL_mspace_free(openjkdf2_mem_main_mspace, pHdr, size, sizeAlign, &trackingAllocsB, &trackingAllocsBReal);
+        return;
+    }
+    else if (HDR_MEMTYPE_RD(pHdr) == 0xD5 /*|| ((intptr_t)pHdr >= openjkdf2_mem_main_mspace_start && (intptr_t)pHdr <= openjkdf2_mem_main_mspace_end)*/) {
+        TWL_mspace_free(openjkdf2_mem_nwram_mspace, pHdr, size, sizeAlign, &trackingAllocsC, &trackingAllocsCReal);
+        return;
+    }
+    else if (memtype == 0xDE) {
+        printf("Double free? %p\n", ptr);
+        while(1);
+    }
+    else {
+        printf("Where does this go?? %p %x\n", ptr, memtype);
+        while(1);
+    }
+    /*else {
+        __real_free(ptr);
+    }*/
+}
+
+static void* TWL_realloc(void* ptr, uint32_t len)
+{
+    if (!len) { return NULL; }
+    if (!ptr) {
+        return Linux_alloc(len);
+    }
+    extern mspace openjkdf2_mem_alt_mspace;
+    tMemTrackingHeader* pHdr = (tMemTrackingHeader*)((intptr_t)ptr - sizeof(tMemTrackingHeader));
+    uint32_t oldSize = HDR_SIZE_RD(pHdr);
+    uint32_t sizeAlign = ((HDR_SIZE_RD(pHdr) + sizeof(tMemTrackingHeader)) + (ALLOC_ALIGN-1)) & ~(ALLOC_ALIGN-1);
+    uint32_t lenAlign = ((len + sizeof(tMemTrackingHeader)) + (ALLOC_ALIGN-1)) & ~(ALLOC_ALIGN-1);
+
+#ifdef MEM_CHECKING
+    sizeAlign += MEM_CHECKING_ADD;
+    lenAlign += MEM_CHECKING_ADD;
+#endif
+
+#ifdef MEM_CHECKING
+    for (uint32_t i = HDR_SIZE_RD(pHdr); i < sizeAlign - sizeof(tMemTrackingHeader); i++) {
+        if (*((uint8_t*)ptr + i) != MEM_CHECKING_VAL) {
+            printf("OOB write!! %p %x %x, %x %x\n", pHdr, HDR_SIZE_RD(pHdr), sizeAlign - sizeof(tMemTrackingHeader), len, lenAlign - sizeof(tMemTrackingHeader));
+            while(1);
+        }
+    }
+#endif
+
+    void* ret = NULL;
+    if (HDR_MEMTYPE_RD(pHdr) == 0xF0) {
+        return TWL_mspace_realloc(openjkdf2_mem_alt_mspace, 0xF0, pHdr, oldSize, sizeAlign, len, lenAlign, &trackingAllocsA, &trackingAllocsAReal);
+    }
+    else if (HDR_MEMTYPE_RD(pHdr) == 0xDA) {
+        return TWL_mspace_realloc(openjkdf2_mem_main_mspace, 0xDA, pHdr, oldSize, sizeAlign, len, lenAlign, &trackingAllocsB, &trackingAllocsBReal);
+    }
+    else if (HDR_MEMTYPE_RD(pHdr) == 0xD5) {
+        return TWL_mspace_realloc(openjkdf2_mem_nwram_mspace, 0xD5, pHdr, oldSize, sizeAlign, len, lenAlign, &trackingAllocsC, &trackingAllocsCReal);
+    }
+    else if (HDR_MEMTYPE_RD(pHdr) == 0xDE) {
+        printf("Double free realloc? %p\n", ptr);
+        while(1);
+    }
+    else {
+        printf("Where does this go?? %p %d\n", ptr, len);
+        while(1);
+        //return __real_realloc(ptr, len);
+    }
+}
+
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void *__wrap_malloc(uint32_t size) {
+    return TWL_alloc(size);
+}
+
+void __wrap_free(void *ptr) {
+    TWL_free(ptr);
+}
+
+void* __wrap_realloc(void *ptr, uint32_t len) {
+    return TWL_realloc(ptr, len);
+}
+
+void *__wrap_calloc(size_t num, size_t size) {
+    return TWL_alloc(num*size);
+}
+
+extern int64_t __real___muldi3(int32_t a, int32_t b);
+
+__attribute__((naked)) int64_t __wrap___muldi3(int32_t a, int32_t b) {
+    __asm__ (
+        ".align 4\n"
+        ".thumb\n"
+        "bx pc\n"
+        "nop\n"
+        ".arm\n"
+
+        "mul r3, r0, r3\n"
+        "mla r3, r2, r1, r3\n"
+        "umull   r0, r1, r2, r0\n"
+        "add r1, r3\n"
+    
+        "bx lr\n"
+    );
+}
+
+__attribute__((naked)) int64_t __wrap___aeabi_lmul(int64_t a, int64_t b) {
+    __asm__ (
+        ".align 4\n"
+        ".thumb\n"
+        "mul r3, r0, r3\n"
+        "bx pc\n"
+        ".arm\n"
+
+        
+        "mla r3, r2, r1, r3\n"
+        "umull   r0, r1, r2, r0\n"
+        "add r1, r3\n"
+    
+        "bx lr\n"
+    );
+}
+
+__attribute__((naked)) int64_t __smull_helper(int32_t a, int32_t b) {
+    __asm__ (
+        ".align 4\n"
+        ".thumb\n"
+        "mov r3, r0\n"
+        "mov r2, r1\n"
+        "bx pc\n"
+        "nop\n"
+        ".arm\n"
+
+        "smull   r0, r1, r2, r3\n"
+    
+        "bx lr\n"
+    );
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+
+#ifdef TARGET_DREAMCAST
+// ---------------------------------------------------------------------------
+// Dreamcast tracked allocator (ported from the DSi/TWL path, kept as its own
+// block for now).
+//
+// The engine churns many small allocations while streaming aMaterials in and out;
+// routing them through a dlmalloc mspace gives block coalescing (to fight heap
+// fragmentation on the DC's 16 MiB) plus a small tracking header for debugging:
+// per-alloc size + pool marker, double-free detection, and optional guard bytes.
+//
+// Allocation order: SYSTEM RAM FIRST (fast, cached newlib heap), then spill into a
+// 4 MiB overflow arena carved out of PVR VRAM (slower, uncached CPU access -- so only
+// cold data lands there). If BOTH are exhausted the emergency free-up runs (sound +
+// material LRU caches) and we retry once. The VRAM arena is a dlmalloc mspace (block
+// coalescing); sysram uses plain newlib malloc.
+//
+// Deliberately wired only as the engine HostServices alloc/free/realloc, NOT via
+// linker --wrap: KOS is preemptively multithreaded and the mspace is not lock-
+// guarded, so KOS/newlib's own allocations stay on their heap.
+// ---------------------------------------------------------------------------
+
+#include <dc/pvr.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern void *__real_malloc(size_t size);
+extern void __real_free(void *ptr);
+extern void* __real_realloc(void *ptr, size_t len);
+extern void *__real_calloc(size_t num, size_t size);
+
+#ifdef __cplusplus
+}
+#endif
+
+#define DC_ALLOC_ALIGN 8   // keep user pointers 8-byte aligned (doubles/pointers)
+
+//#define DC_MEM_CHECKING          // guard bytes after each alloc to catch OOB writes
+                                    // (caught a real double-free in the OOM-unwind path once; word-safe fills)
+#define DC_MEM_CHECKING_VAL      0xAA
+#define DC_MEM_CHECKING_VAL_FREE 0x55
+
+// Tracking-header high byte: which pool the block lives in (and freed sentinel).
+#define DC_MARK_MSPACE 0xDC   // VRAM word-addressable arena (opt-in, see DC_alloc)
+#define DC_MARK_SYS    0x5A   // system RAM (newlib) -- the primary pool
+#define DC_MARK_FREED  0xDE   // sentinel written on free (double-free detection)
+
+// VRAM word-addressable arena sizing. VRAM is 8 MiB total; the PVR keeps framebuffers,
+// the vertex buffer and the OPB, and the rest is the texture pool. We carve the arena
+// out of that pool, but adaptively: take the smaller of the target below and whatever
+// pvr_mem has free beyond a reserve kept for the menu texture (allocated just after
+// this) and streamed world textures. This never over-grabs (which used to fail
+// pvr_mem_malloc outright, leaving no arena) and self-tunes to the current PVR config.
+//
+// PVR texture RAM drops byte-granular CPU stores (the controller works in 16-bit
+// lanes; a byte write mangles its lane -- see the probe in DC_InitVramOverflow), so
+// the arena only serves allocations explicitly flagged HEAP_WORD_ADDRESSABLE by the
+// caller via suggestHeap. It is NOT a transparent spill pool for general data.
+#define DC_VRAM_OVERFLOW_SIZE   (4 * 1024 * 1024)  // desired max, capped to what's free
+#define DC_VRAM_TEXTURE_RESERVE (5 * 512 * 1024)   // ~2.5 MiB left for menuTex + textures
+#define DC_VRAM_OVERFLOW_MIN    (256 * 1024)       // don't bother creating a tiny arena
+
+typedef struct DcMemHeader {
+    uint32_t mark_size;   // [31:24] pool marker, [23:0] user byte size
+    uint32_t _pad;        // keeps the following user pointer 8-byte aligned
+} DcMemHeader;
+#define DC_HDR_MARK(p)     (((p)->mark_size >> 24) & 0xFF)
+#define DC_HDR_SIZE(p)     ((p)->mark_size & 0xFFFFFF)
+#define DC_HDR_SET(p,m,s)  ((p)->mark_size = (((m) & 0xFF) << 24) | ((s) & 0xFFFFFF))
+
+static mspace dc_vram_mspace = NULL;
+static uintptr_t dc_vram_arena_base = 0;   // Added: arena bounds, see stdPlatform_IsWordAddressableOnly
+static uintptr_t dc_vram_arena_end  = 0;
+static size_t dc_vram_mspace_size = 0;
+static int dc_heapSuggestion = HEAP_ANY;
+
+static int DC_suggestHeap(int which)
+{
+    int prev = dc_heapSuggestion;
+    dc_heapSuggestion = which;
+    return prev;
+}
+
+// Live-allocation stats (exported for debugging).
+size_t dc_trackingAllocs     = 0;  // user bytes live in the VRAM overflow mspace
+size_t dc_trackingAllocsReal = 0;  // aligned bytes live in the VRAM overflow mspace
+size_t dc_trackingSys        = 0;  // user bytes live in system RAM (the primary pool)
+size_t dc_activeAllocs       = 0;
+
+static inline uint32_t DC_BlockSize(uint32_t len)
+{
+    uint32_t total = (len + (uint32_t)sizeof(DcMemHeader) + (DC_ALLOC_ALIGN - 1)) & ~(DC_ALLOC_ALIGN - 1);
+#ifdef DC_MEM_CHECKING
+    total += DC_ALLOC_ALIGN; // guard region
+#endif
+    return total;
+}
+
+// Reserve the VRAM overflow arena. Must be called AFTER pvr_init (VRAM is up) and
+// EARLY -- before the texture cache fragments VRAM -- so the 4 MiB block is contiguous.
+// Called from std3D_Startup. Safe to call more than once (no-op after the first).
+// Added: expose the arena bounds to stdPlatform_IsWordAddressableOnly (which
+// lives outside this TARGET_DREAMCAST section).
+void DC_GetVramArenaBounds(uintptr_t* pBase, uintptr_t* pEnd)
+{
+    *pBase = dc_vram_arena_base;
+    *pEnd  = dc_vram_arena_end;
+}
+
+void DC_InitVramOverflow(void)
+{
+    if (dc_vram_mspace) return;
+
+    // Grab the smaller of the target and (free VRAM - texture reserve), so we never fail
+    // the alloc by over-asking and always leave headroom for textures.
+    size_t avail  = pvr_mem_available();
+    size_t budget = (avail > DC_VRAM_TEXTURE_RESERVE) ? (avail - DC_VRAM_TEXTURE_RESERVE) : 0;
+    size_t want   = DC_VRAM_OVERFLOW_SIZE;
+    if (want > budget) want = budget;
+    want &= ~(size_t)31;   // keep the 32-byte alignment pvr_mem hands out
+
+    if (want >= DC_VRAM_OVERFLOW_MIN) {
+        // pvr_mem_malloc returns a 32-byte-aligned pointer in the 64-bit texture window
+        // (0xa4......, P2 uncached). NOTE: PVR texture RAM does not honor byte-granular
+        // CPU stores (the memory controller works in 16-bit lanes) -- see the byte-store
+        // probe below. That makes a general-purpose heap here unsafe for any data that
+        // gets memcpy'd/byte-written, which is most engine data.
+        void* base = pvr_mem_malloc(want);
+        if (base) {
+            // Byte-store probe: on real hardware byte writes to VRAM mangle the
+            // containing 16-bit lane (Flycast emulates VRAM as plain RAM and passes).
+            volatile uint8_t* p8 = (volatile uint8_t*)base;
+            volatile uint16_t* p16 = (volatile uint16_t*)base;
+            p16[0] = 0x1122; p16[1] = 0x3344;
+            p8[0] = 0xAA; p8[3] = 0xBB;      // expect 0x11AA / 0xBB44 if bytes work
+            stdPlatform_Printf("[DC heap] VRAM byte-store probe: %04x %04x (want 11aa bb44) -> %s\n",
+                               p16[0], p16[1],
+                               (p16[0] == 0x11AA && p16[1] == 0xBB44) ? "OK" : "BROKEN");
+            dc_vram_mspace = create_mspace_with_base(base, want, 0);
+            dc_vram_mspace_size = want;
+            dc_vram_arena_base = (uintptr_t)base;      // Added: for stdPlatform_IsWordAddressableOnly
+            dc_vram_arena_end  = (uintptr_t)base + want;
+        }
+    }
+    stdPlatform_Printf("[DC heap] VRAM word-addressable arena: %u KiB (of %u KiB free; %u KiB reserved for textures)\n",
+                       (unsigned)(dc_vram_mspace_size / 1024), (unsigned)(avail / 1024),
+                       (unsigned)(DC_VRAM_TEXTURE_RESERVE / 1024));
+}
+
+static void* DC_alloc(uint32_t len)
+{
+    static int bDontTryAgain = 0;
+    if (!len) return NULL;
+
+    uint32_t total = DC_BlockSize(len);
+
+    // The VRAM arena is word-addressable only, so it's gated behind an explicit
+    // HEAP_WORD_ADDRESSABLE suggestion from the caller: those allocations prefer
+    // VRAM (relieving sysram) and fall back to sysram; everything else is
+    // sysram-only (fast, cached, byte-addressable).
+    uint8_t mark = DC_MARK_MSPACE;
+    void* raw = NULL;
+    if (dc_heapSuggestion == HEAP_WORD_ADDRESSABLE && dc_vram_mspace) {
+        raw = mspace_malloc(dc_vram_mspace, total);
+    }
+    if (!raw) {
+        raw = __real_malloc(total);
+        mark = DC_MARK_SYS;
+    }
+
+    if (!raw) {
+        // Emergency freeing measures -- the main reason this override exists.
+        // Every pool this allocation may use is exhausted, so reclaim from the sound
+        // and material LRU caches (which the plain KOS malloc has no way to reach)
+        // and retry once.
+        if (!bDontTryAgain) {
+            extern int sithSound_FreeUpMemory(uint32_t);
+            extern int rdMaterial_PurgeMaterialCache(void);
+            extern int rdMaterial_PurgeEntireMaterialCache(void);
+            if (!sithSound_FreeUpMemory(len)) {
+                if (!rdMaterial_PurgeMaterialCache()) {
+                    rdMaterial_PurgeEntireMaterialCache();
+                }
+            }
+            bDontTryAgain = 1;
+            void* ret = DC_alloc(len);
+            bDontTryAgain = 0;
+            return ret;
+        }
+        stdPlatform_Printf("[DC heap] failed to allocate %u bytes (sys %u KiB live, VRAM %u/%u KiB)\n",
+                           (unsigned)len, (unsigned)(dc_trackingSys / 1024),
+                           (unsigned)(dc_trackingAllocsReal / 1024), (unsigned)(dc_vram_mspace_size / 1024));
+        return NULL;
+    }
+
+    if (mark == DC_MARK_MSPACE) {
+        dc_trackingAllocs     += len;
+        dc_trackingAllocsReal += total;
+    } else {
+        dc_trackingSys += len;
+    }
+    dc_activeAllocs++;
+
+    DcMemHeader* hdr = (DcMemHeader*)raw;
+    DC_HDR_SET(hdr, mark, len);
+    void* user = (void*)((uintptr_t)raw + sizeof(DcMemHeader));
+    stdPlatform_Memzero32(user, len); // engine relies on zeroed allocations; word ops for VRAM safety
+#ifdef DC_MEM_CHECKING
+    stdPlatform_Memset32((uint8_t*)user + len, DC_MEM_CHECKING_VAL,   // word-safe for VRAM blocks
+                         total - (uint32_t)sizeof(DcMemHeader) - len);
+#endif
+    return user;
+}
+
+static void DC_free(void* ptr)
+{
+    if (!ptr) return;
+    DcMemHeader* hdr = (DcMemHeader*)((uintptr_t)ptr - sizeof(DcMemHeader));
+    uint8_t  mark = DC_HDR_MARK(hdr);
+    uint32_t len  = DC_HDR_SIZE(hdr);
+    uint32_t total = DC_BlockSize(len);
+
+#ifdef DC_MEM_CHECKING
+    for (uint32_t i = len; i < total - (uint32_t)sizeof(DcMemHeader); i++) {
+        if (*((uint8_t*)ptr + i) != DC_MEM_CHECKING_VAL) {
+            stdPlatform_Printf("[DC heap] OOB write past %p (size %u): %02x at +%u\n",
+                               ptr, (unsigned)len, *((uint8_t*)ptr + i), (unsigned)i);
+            break;
+        }
+    }
+    stdPlatform_Memset32(ptr, DC_MEM_CHECKING_VAL_FREE, total - (uint32_t)sizeof(DcMemHeader)); // word-safe
+#endif
+
+    if (mark == DC_MARK_FREED) {
+        stdPlatform_Printf("[DC heap] double free %p\n", ptr);
+        return;
+    }
+
+    DC_HDR_SET(hdr, DC_MARK_FREED, 0);
+    dc_activeAllocs--;
+
+    if (mark == DC_MARK_MSPACE) {
+        dc_trackingAllocs     -= len;
+        dc_trackingAllocsReal -= total;
+        mspace_free(dc_vram_mspace, hdr);
+    } else if (mark == DC_MARK_SYS) {
+        dc_trackingSys -= len;
+        __real_free(hdr);
+    } else {
+        stdPlatform_Printf("[DC heap] free of unknown block %p (marker %02x)\n", ptr, mark);
+        //__real_free(ptr);
+        //return;
+    }
+}
+
+static void* DC_realloc(void* ptr, uint32_t len)
+{
+    if (!ptr) return DC_alloc(len);
+    if (!len) { DC_free(ptr); return NULL; }
+
+    DcMemHeader* hdr = (DcMemHeader*)((uintptr_t)ptr - sizeof(DcMemHeader));
+    uint32_t oldLen = DC_HDR_SIZE(hdr);
+    if (oldLen == len) return ptr;
+
+    // Simple move-realloc: alloc + copy + free. Keeps the header/pool bookkeeping
+    // correct even when a block migrates between pools. Word copy: either side
+    // may be in the VRAM arena, where byte-store tails would mangle a 16-bit lane.
+    void* nw = DC_alloc(len);
+    if (!nw) return NULL;
+    stdPlatform_Memcpy32(nw, ptr, oldLen < len ? oldLen : len);
+    DC_free(ptr);
+    return nw;
+}
+
+void *__wrap_malloc(uint32_t size) {
+    //return DC_alloc(size);
+    return __real_malloc(size);
+}
+
+void __wrap_free(void *ptr) {
+    //DC_free(ptr);
+    __real_free(ptr);
+}
+
+void* __wrap_realloc(void *ptr, uint32_t len) {
+    //return DC_realloc(ptr, len);
+    return __real_realloc(ptr, len);
+}
+
+void *__wrap_calloc(size_t num, size_t size) {
+    //return DC_alloc(num*size);
+    return __real_calloc(num, size);
+}
+#endif // TARGET_DREAMCAST
+
+static int Linux_stdFeof(stdFile_t hGobFile)
+{
+    return feof((FILE*)hGobFile);
+}
+
+uint32_t stdPlatform_GetTimeMsec()
+{
+    return Linux_TimeMs();
+}
+#endif
+
+#ifdef STDPLATFORM_HEAP_SUGGESTIONS
+static int Dummy_suggestHeap(int which) { return HEAP_ANY; }
+#endif
+
+#ifndef PLATFORM_POSIX
+void stdPlatform_Assert(const char *msg, const char *file, int line)
+{
+    char buf[512];
+    int lastSlash = 0;
+    for (int i = 0; file[i]; i++)
+    {
+        if ( file[i] == '\\' )
+            lastSlash = i;
+    }
+    _sprintf(buf, "%s\n(%s, %d)\n", msg, &file[lastSlash ? lastSlash + 1 : 0], line);
+    jk_printf("ASSERT: %s", buf);
+}
+
+void* stdPlatform_AllocHandle(uint32_t size)
+{
+    return _malloc(size);
+}
+
+void stdPlatform_FreeHandle(void *ptr)
+{
+    _free(ptr);
+}
+
+void* stdPlatform_ReallocHandle(void *ptr, uint32_t size)
+{
+    return _realloc(ptr, size);
+}
+
+void* stdPlatform_LockHandle(void *ptr)
+{
+    return ptr;
+}
+
+void stdPlatform_UnlockHandle(void *ptr)
+{
+}
+
+void stdPlatform_GetDateTime(char *out, uint32_t outLen)
+{
+    SYSTEMTIME st;
+    char tmp[80];
+    GetLocalTime(&st);
+    const char *ampm = (st.wHour >= 13) ? "pm" : "am";
+    uint16_t hour12 = (st.wHour >= 13) ? st.wHour - 12 : st.wHour;
+    _sprintf(tmp, "%d/%d/%02d %d:%02d %s", st.wMonth, st.wDay, st.wYear, hour12, st.wMinute, ampm);
+    _strncpy(out, tmp, outLen);
+}
+#endif // !PLATFORM_POSIX
+
+void stdPlatform_InitServices(HostServices *handlers)
+{
+    handlers->statusPrint = stdPlatform_Printf;
+    handlers->messagePrint = stdPlatform_Printf;
+    handlers->warningPrint = stdPlatform_Printf;
+    handlers->errorPrint = stdPlatform_Printf;
+    handlers->some_float = 1000.0;
+    handlers->debugPrint = 0;
+#ifndef PLATFORM_POSIX
+    handlers->assert = stdPlatform_Assert;
+#endif
+    handlers->unk_0 = 0;
+#ifndef PLATFORM_POSIX
+    handlers->alloc = daAlloc;
+    handlers->free = daFree;
+    handlers->realloc =  daRealloc;
+    handlers->getTimerTick = stdPlatform_GetTimeMsec;
+    handlers->fileOpen = stdFileOpen;
+    handlers->fileClose = stdFileClose;
+    handlers->fileRead = stdFileRead;
+    handlers->fileGets = stdFileGets;
+    handlers->fileWrite = stdFileWrite;
+    handlers->fileEof = stdFeof;
+    handlers->ftell = stdFtell;
+    handlers->fseek = stdFseek;
+    handlers->fileSize = stdFileSize;
+    handlers->filePrintf = stdFilePrintf;
+    handlers->fileGetws = stdFileGetws;
+    handlers->allocHandle = stdPlatform_AllocHandle;
+    handlers->freeHandle = stdPlatform_FreeHandle;
+    handlers->reallocHandle = stdPlatform_ReallocHandle;
+    handlers->lockHandle = stdPlatform_LockHandle;
+    handlers->unlockHandle = stdPlatform_UnlockHandle;
+#endif
+
+#ifdef PLATFORM_POSIX
+    handlers->alloc = Linux_alloc;
+    handlers->free = Linux_free;
+    handlers->realloc = Linux_realloc;
+    handlers->fileOpen = Linux_stdFileOpen;
+    handlers->fileClose = Linux_stdFileClose;
+    handlers->fileRead = Linux_stdFileRead;
+    handlers->fileGets = Linux_stdFileGets;
+    handlers->fileWrite = Linux_stdFileWrite;
+    handlers->fileGetws = Linux_stdFileGetws;
+    handlers->fseek = Linux_stdFseek;
+    handlers->ftell = Linux_stdFtell;
+    handlers->getTimerTick = Linux_TimeMs;
+    handlers->fileEof = Linux_stdFeof;
+#endif
+
+#ifdef STDPLATFORM_HEAP_SUGGESTIONS
+   handlers->suggestHeap = Dummy_suggestHeap;
+#endif
+
+#ifdef TARGET_TWL
+    handlers->alloc = TWL_alloc;
+    handlers->free = TWL_free;
+    handlers->realloc = TWL_realloc;
+    handlers->suggestHeap = TWL_suggestHeap;
+#endif
+
+#ifdef TARGET_DREAMCAST
+    handlers->alloc = DC_alloc;
+    handlers->free = DC_free;
+    handlers->realloc = DC_realloc;
+    handlers->suggestHeap = DC_suggestHeap;
+#endif
+}
+
+int stdPlatform_Startup()
+{
+    return 1;
+}
+
+#ifdef PLATFORM_POSIX
+int stdPrintf(int (*a1)(const char *, ...), const char *a2, int line, const char *fmt, ...)
+{
+    va_list aArgs;
+    va_start (aArgs, fmt);
+    printf("(%p %s:%d) ", a1, a2, line);
+    int ret = vprintf(fmt, aArgs);
+    va_end (aArgs);
+    return ret;
+}
+
+#ifdef SDL2_RENDER
+static SDL_Mutex* stdPlatform_mtxPrintf = NULL;
+#endif
+
+int stdPlatform_Printf(const char *fmt, ...)
+{
+    char tmp[256];
+    va_list aArgs;
+
+#ifdef SDL2_RENDER
+    if (!stdPlatform_mtxPrintf)
+        stdPlatform_mtxPrintf = SDL_CreateMutex();
+
+    SDL_LockMutex(stdPlatform_mtxPrintf);
+#endif
+    
+    va_start (aArgs, fmt);
+    int ret = vprintf(fmt, aArgs);
+    va_end (aArgs);
+
+#ifdef QUAKE_CONSOLE
+    va_start (aArgs, fmt);
+    vsnprintf(tmp, sizeof(tmp), fmt, aArgs);
+    jkQuakeConsole_PrintLine(tmp);
+    va_end(aArgs);
+#endif
+
+#ifdef TARGET_ANDROID
+    LOGI("%s", tmp);
+#endif
+
+#ifdef TARGET_TWL
+    // Added: mirror prints to the no$gba-style debug string port that melonDS
+    // implements (0x04FFFA18 = "string out + linefeed"; libnds nocashMessage
+    // uses the mov r12,r12 protocol melonDS doesn't). Unmapped I/O on real
+    // hardware, so the write is a harmless no-op there.
+    {
+        // Static: the stack lives in DTCM, which the emulator's bus-level string
+        // read can't see; this buffer lands in main RAM.
+        static char aNocashBuf[256];
+        va_start(aArgs, fmt);
+        vsnprintf(aNocashBuf, sizeof(aNocashBuf), fmt, aArgs);
+        va_end(aArgs);
+        size_t tlen = strlen(aNocashBuf);
+        if (tlen && aNocashBuf[tlen-1] == '\n')
+            aNocashBuf[tlen-1] = 0; // the port appends the newline
+        // Skip the bottom-screen console's ANSI cursor/color sequences -- they
+        // are screen-positioning spam in a line-oriented emulator log.
+        if (aNocashBuf[0] && aNocashBuf[0] != '\x1b')
+            *(volatile uint32_t*)0x04FFFA18 = (uint32_t)aNocashBuf;
+    }
+#endif
+
+#ifdef SDL2_RENDER
+    SDL_UnlockMutex(stdPlatform_mtxPrintf);
+#endif
+    return ret;
+}
+#endif
+
+#ifdef TARGET_TWL
+void stdPlatform_PrintHeapStats()
+{
+    size_t waste = (trackingAllocsAReal - trackingAllocsA) + (trackingAllocsBReal - trackingAllocsB) + (trackingAllocsCReal - trackingAllocsC);
+    // Added: raw printf -- this runs per frame for the on-screen HUD; keep it
+    // off the emulator debug channel (stdPlatform_Printf mirrors to nocash).
+    printf("heap ext=0x%zx mn=0x%zx\nnw=0x%zx wst=0x%zx\nnum=%zd\n", trackingAllocsA, trackingAllocsB, trackingAllocsC, waste, activeAllocs);
+}
+#endif // TARGET_TWL
+
+#ifdef TARGET_DREAMCAST
+// Added: current memory pressure. sysUsed/sysFree cover the primary system-RAM
+// pool (sysFree is the untouched sbrk headroom); vram covers the word-addressable
+// VRAM overflow arena. All values in KiB except the live allocation count.
+void DC_GetMemStats(uint32_t* pSysUsedK, uint32_t* pSysFreeK,
+                    uint32_t* pVramUsedK, uint32_t* pVramTotalK, uint32_t* pAllocs)
+{
+    if (pSysUsedK)   *pSysUsedK   = (uint32_t)(dc_trackingSys / 1024);
+    // Untouched RAM above the current heap break (newlib grows via sbrk).
+    if (pSysFreeK)   *pSysFreeK   = (uint32_t)(((uintptr_t)_arch_mem_top - (uintptr_t)sbrk(0)) / 1024);
+    if (pVramUsedK)  *pVramUsedK  = (uint32_t)(dc_trackingAllocsReal / 1024);
+    if (pVramTotalK) *pVramTotalK = (uint32_t)(dc_vram_mspace_size / 1024);
+    if (pAllocs)     *pAllocs     = (uint32_t)dc_activeAllocs;
+}
+
+void stdPlatform_PrintHeapStats()
+{
+    uint32_t sysUsed, sysFree, vramUsed, vramTotal, allocs;
+    DC_GetMemStats(&sysUsed, &sysFree, &vramUsed, &vramTotal, &allocs);
+    stdPlatform_Printf("[DC heap] sys %uK used, %uK free | vram %u/%uK | %u allocs\n",
+                       sysUsed, sysFree, vramUsed, vramTotal, allocs);
+}
+#endif // TARGET_DREAMCAST
+
+#ifdef TARGET_GAMECUBE
+#include <malloc.h>
+#include "Platform/GameCube/gcOgc.h"
+
+// Added: heap usage (newlib malloc arena) and what's left of MEM1 for it to grow into.
+void stdPlatform_PrintHeapStats()
+{
+    extern uint32_t gcHeap_UsedBytes(void);
+    extern uint32_t gcSystem_FreeBytes(void);
+    extern uint32_t gcAram_poolUsed, gcAram_poolSize, gcAram_poolFails;
+    stdPlatform_Printf("[GC heap] used %uK, free %uK, aram tex %uK/%uK fails %u\n",
+                       (unsigned)(gcHeap_UsedBytes() / 1024), (unsigned)(gcSystem_FreeBytes() / 1024),
+                       (unsigned)(gcAram_poolUsed / 1024), (unsigned)(gcAram_poolSize / 1024),
+                       (unsigned)gcAram_poolFails);
+}
+#endif // TARGET_GAMECUBE
+
+
+// Added: per-file allocation cataloguing. The original game clearly had debug
+// allocation hooks in its host-services design; this reconstructs the idea.
+// Enabled by STDPLATFORM_ALLOC_TRACKING (the *_ALLOC/*_FREE macros in
+// stdPlatform.h); stats keyed on __FILE__ string identity (each TU passes its
+// own literal, so pointer compare hits first; strcmp is the cross-TU fallback).
+// Sizes at free/realloc come from stdPlatform_AllocSize below, which reads the
+// platform allocator's own header -- no extra per-allocation overhead that
+// would distort the memory pressure being measured.
+
+// Read back the user-byte size of an allocation from the underlying allocator.
+// Returns 0 if unknown (untracked/foreign pointer) -- callers treat 0 as "skip".
+uint32_t stdPlatform_AllocSize(void* p)
+{
+    if (!p) return 0;
+#if defined(TARGET_DREAMCAST)
+    DcMemHeader* hdr = (DcMemHeader*)p - 1;
+    uint8_t mark = DC_HDR_MARK(hdr);
+    if (mark != DC_MARK_MSPACE && mark != DC_MARK_SYS)
+        return 0;
+    return DC_HDR_SIZE(hdr);
+#elif defined(TARGET_TWL)
+    tMemTrackingHeader* hdr = (tMemTrackingHeader*)p - 1;
+    if (HDR_MEMTYPE_RD(hdr) == 0xDE)
+        return 0;
+    return HDR_SIZE_RD(hdr);
+#elif defined(__APPLE__)
+    extern size_t malloc_size(const void*);
+    return (uint32_t)malloc_size(p);
+#elif defined(__GLIBC__)
+    extern size_t malloc_usable_size(void*);
+    return (uint32_t)malloc_usable_size(p);
+#elif defined(_MSC_VER)
+    return (uint32_t)_msize(p);
+#elif defined(TARGET_GAMECUBE)
+    extern uint32_t gcHeap_UsableSize(void*);
+    return gcHeap_UsableSize(p);
+#else
+    return 0;
+#endif
+}
+
+#define STDALLOCTRACK_MAX_FILES 128
+typedef struct stdAllocTrackEnt
+{
+    const char* pFile;
+    int32_t liveBytes;
+    int32_t liveCount;
+    int32_t peakBytes;
+    uint32_t totalAllocs;
+} stdAllocTrackEnt;
+static stdAllocTrackEnt stdPlatform_aAllocTrack[STDALLOCTRACK_MAX_FILES];
+static int stdPlatform_numAllocTrack = 0;
+static int32_t stdPlatform_allocTrackUntracked = 0; // freed-without-size etc.
+
+static stdAllocTrackEnt* stdPlatform_AllocTrackEnt(const char* pFile)
+{
+    for (int i = 0; i < stdPlatform_numAllocTrack; i++) {
+        if (stdPlatform_aAllocTrack[i].pFile == pFile)
+            return &stdPlatform_aAllocTrack[i];
+    }
+    for (int i = 0; i < stdPlatform_numAllocTrack; i++) {
+        if (!_strcmp(stdPlatform_aAllocTrack[i].pFile, pFile))
+            return &stdPlatform_aAllocTrack[i];
+    }
+    if (stdPlatform_numAllocTrack >= STDALLOCTRACK_MAX_FILES)
+        return NULL;
+    stdAllocTrackEnt* ent = &stdPlatform_aAllocTrack[stdPlatform_numAllocTrack++];
+    ent->pFile = pFile;
+    return ent;
+}
+
+#if defined(TARGET_GAMECUBE)
+// GameCube diagnostics: remember which file made each live allocation (a side
+// table, so pointers and block layout stay as they are), and charge frees and
+// reallocs back to that file. Frees of pointers the table doesn't know (made
+// before tracking, or by plain malloc) are ignored instead of going negative.
+#define GCOWN_SLOTS 32768
+typedef struct { void* p; int32_t idx; uint32_t size; } gcOwnSlot;
+static gcOwnSlot* stdPlatform_pOwn = NULL;
+uint32_t stdPlatform_ownOverflow = 0;
+#define GCOWN_TOMB ((void*)1)
+
+static uint32_t stdPlatform_OwnHash(void* p) { return (uint32_t)(((uintptr_t)p >> 3) * 2654435761u) % GCOWN_SLOTS; }
+
+static int stdPlatform_ownDisabled = 0; // table filled up: stop (a full table made every free scan it all)
+
+static void stdPlatform_OwnPut(void* p, int32_t idx, uint32_t size)
+{
+    if (stdPlatform_ownDisabled) return;
+    if (!stdPlatform_pOwn) {
+        stdPlatform_pOwn = (gcOwnSlot*)calloc(GCOWN_SLOTS, sizeof(gcOwnSlot));
+        if (!stdPlatform_pOwn) { stdPlatform_ownOverflow++; return; }
+    }
+    uint32_t h = stdPlatform_OwnHash(p);
+    for (uint32_t n = 0; n < GCOWN_SLOTS; n++, h = (h + 1) % GCOWN_SLOTS) {
+        if (!stdPlatform_pOwn[h].p) {
+            stdPlatform_pOwn[h].p = p;
+            stdPlatform_pOwn[h].idx = idx;
+            stdPlatform_pOwn[h].size = size;
+            return;
+        }
+    }
+    stdPlatform_ownOverflow++;
+}
+
+static gcOwnSlot* stdPlatform_OwnFind(void* p)
+{
+    if (!stdPlatform_pOwn || !p || stdPlatform_ownDisabled) return NULL;
+    uint32_t h = stdPlatform_OwnHash(p);
+    for (uint32_t n = 0; n < GCOWN_SLOTS; n++, h = (h + 1) % GCOWN_SLOTS) {
+        if (!stdPlatform_pOwn[h].p) return NULL;
+        if (stdPlatform_pOwn[h].p == p) return &stdPlatform_pOwn[h];
+    }
+    return NULL;
+}
+
+static void stdPlatform_Charge(int32_t idx, int32_t bytes, int32_t count)
+{
+    stdAllocTrackEnt* ent = &stdPlatform_aAllocTrack[idx];
+    ent->liveBytes += bytes;
+    ent->liveCount += count;
+    if (bytes > 0) {
+        ent->totalAllocs++;
+        if (ent->liveBytes > ent->peakBytes) ent->peakBytes = ent->liveBytes;
+    }
+}
+
+// Allocations made outside the *_ALLOC macros (e.g. memalign'd pixel buffers).
+void stdPlatform_GcTrackExternal(void* p, uint32_t len, const char* pFile)
+{
+    stdAllocTrackEnt* ent = p ? stdPlatform_AllocTrackEnt(pFile) : NULL;
+    if (!ent) return;
+    int32_t idx = (int32_t)(ent - stdPlatform_aAllocTrack);
+    uint32_t before = stdPlatform_ownOverflow;
+    stdPlatform_OwnPut(p, idx, len);
+    if (stdPlatform_ownOverflow != before) { stdPlatform_ownDisabled = 1; return; }
+    stdPlatform_Charge(idx, (int32_t)len, 1);
+}
+
+// Linear-probing delete without tombstones (backward shift), so lookups stay short.
+static void stdPlatform_OwnRemove(gcOwnSlot* s)
+{
+    uint32_t i = (uint32_t)(s - stdPlatform_pOwn);
+    uint32_t j = i;
+    for (;;) {
+        j = (j + 1) % GCOWN_SLOTS;
+        if (!stdPlatform_pOwn[j].p) break;
+        uint32_t k = stdPlatform_OwnHash(stdPlatform_pOwn[j].p);
+        // move j back to i if its home k is not cyclically in (i, j]
+        int bInRange = (i <= j) ? (i < k && k <= j) : (i < k || k <= j);
+        if (!bInRange) {
+            stdPlatform_pOwn[i] = stdPlatform_pOwn[j];
+            i = j;
+        }
+    }
+    stdPlatform_pOwn[i].p = NULL;
+}
+
+void stdPlatform_GcUntrackExternal(void* p)
+{
+    gcOwnSlot* s = stdPlatform_OwnFind(p);
+    if (!s) return;
+    stdPlatform_Charge(s->idx, -(int32_t)s->size, -1);
+    stdPlatform_OwnRemove(s);
+}
+
+void* stdPlatform_TrackedAlloc(void* (*allocFn)(uint32_t), uint32_t len, const char* pFile)
+{
+    void* p = allocFn(len);
+    if (p) stdPlatform_GcTrackExternal(p, len, pFile);
+    return p;
+}
+
+void stdPlatform_TrackedFree(void (*freeFn)(void*), void* p, const char* pFile)
+{
+    if (p) {
+        if (stdPlatform_OwnFind(p)) stdPlatform_GcUntrackExternal(p);
+        else stdPlatform_allocTrackUntracked++;
+    }
+    freeFn(p);
+}
+
+void* stdPlatform_TrackedRealloc(void* (*reallocFn)(void*, uint32_t), void* p, uint32_t len, const char* pFile)
+{
+    gcOwnSlot* s = stdPlatform_OwnFind(p);
+    int32_t idx = s ? s->idx : -1;
+    uint32_t oldSz = s ? s->size : 0;
+    void* pNew = reallocFn(p, len);
+    if (!pNew) return pNew;
+    if (s) { stdPlatform_Charge(idx, -(int32_t)oldSz, -1); stdPlatform_OwnRemove(s); }
+    if (idx < 0) {
+        stdAllocTrackEnt* ent = stdPlatform_AllocTrackEnt(pFile);
+        if (!ent) return pNew;
+        idx = (int32_t)(ent - stdPlatform_aAllocTrack);
+    }
+    uint32_t before = stdPlatform_ownOverflow;
+    stdPlatform_OwnPut(pNew, idx, len);
+    if (stdPlatform_ownOverflow != before) { stdPlatform_ownDisabled = 1; return pNew; }
+    stdPlatform_Charge(idx, (int32_t)len, 1);
+    return pNew;
+}
+#else
+void* stdPlatform_TrackedAlloc(void* (*allocFn)(uint32_t), uint32_t len, const char* pFile)
+{
+    void* p = allocFn(len);
+    if (p) {
+        stdAllocTrackEnt* ent = stdPlatform_AllocTrackEnt(pFile);
+        if (ent) {
+            ent->liveBytes += (int32_t)len;
+            ent->liveCount++;
+            ent->totalAllocs++;
+            if (ent->liveBytes > ent->peakBytes)
+                ent->peakBytes = ent->liveBytes;
+        }
+    }
+    return p;
+}
+
+void stdPlatform_TrackedFree(void (*freeFn)(void*), void* p, const char* pFile)
+{
+    if (p) {
+        uint32_t sz = stdPlatform_AllocSize(p);
+        stdAllocTrackEnt* ent = stdPlatform_AllocTrackEnt(pFile);
+        if (ent && sz) {
+            ent->liveBytes -= (int32_t)sz;
+            ent->liveCount--;
+        }
+        else if (!sz) {
+            stdPlatform_allocTrackUntracked++;
+        }
+    }
+    freeFn(p);
+}
+
+void* stdPlatform_TrackedRealloc(void* (*reallocFn)(void*, uint32_t), void* p, uint32_t len, const char* pFile)
+{
+    uint32_t oldSz = p ? stdPlatform_AllocSize(p) : 0;
+    void* pNew = reallocFn(p, len);
+    if (pNew) {
+        stdAllocTrackEnt* ent = stdPlatform_AllocTrackEnt(pFile);
+        if (ent) {
+            ent->liveBytes += (int32_t)len - (int32_t)oldSz;
+            if (!p) ent->liveCount++;
+            ent->totalAllocs++;
+            if (ent->liveBytes > ent->peakBytes)
+                ent->peakBytes = ent->liveBytes;
+        }
+    }
+    return pNew;
+}
+#endif
+
+#if defined(TARGET_GAMECUBE) && defined(GC_MEM_TRACK)
+// Added: memory carried between levels. Called at every loading screen once the
+// previous level, the menus and the idle caches are gone; the first call is the
+// reference. Anything that grew since then was left behind by an earlier level,
+// cutscene or menu. The list goes to the log.
+#include <malloc.h>
+static int32_t stdPlatform_aMemBase[STDALLOCTRACK_MAX_FILES];
+static int32_t stdPlatform_memBaseHeap = -1;
+static int     stdPlatform_numMemCheckpoints = 0;
+
+static const char* stdPlatform_BaseName(const char* pName)
+{
+    for (const char* c = pName; *c; c++)
+        if (*c == '/' || *c == '\\') pName = c + 1;
+    return pName;
+}
+
+void stdPlatform_GcMemCheckpoint(void)
+{
+    extern uint32_t gcHeap_UsedBytes(void);
+    int32_t heap = (int32_t)gcHeap_UsedBytes();
+    stdPlatform_numMemCheckpoints++;
+    if (stdPlatform_memBaseHeap < 0) {
+        for (int i = 0; i < stdPlatform_numAllocTrack; i++)
+            stdPlatform_aMemBase[i] = stdPlatform_aAllocTrack[i].liveBytes;
+        stdPlatform_memBaseHeap = heap;
+        stdPlatform_Printf("memcheck #1 (reference): heap %d KB\n", (int)(heap / 1024));
+        stdPlatform_PrintAllocStats();
+        return;
+    }
+    int32_t tracked = 0;
+    for (int i = 0; i < stdPlatform_numAllocTrack; i++)
+        tracked += stdPlatform_aAllocTrack[i].liveBytes - stdPlatform_aMemBase[i];
+    int32_t heapDelta = heap - stdPlatform_memBaseHeap;
+    stdPlatform_Printf("memcheck #%d: heap %+d KB vs reference, tracked %+d KB\n",
+                       stdPlatform_numMemCheckpoints, (int)(heapDelta / 1024), (int)(tracked / 1024));
+    for (int i = 0; i < stdPlatform_numAllocTrack; i++) {
+        int32_t d = stdPlatform_aAllocTrack[i].liveBytes - stdPlatform_aMemBase[i];
+        if (d)
+            stdPlatform_Printf("  %+7d KB  %s\n", (int)(d / 1024), stdPlatform_BaseName(stdPlatform_aAllocTrack[i].pFile));
+    }
+}
+#endif
+
+// Dump the catalog, largest live footprint first.
+void stdPlatform_PrintAllocStats(void)
+{
+    int aOrder[STDALLOCTRACK_MAX_FILES];
+    int32_t totalLive = 0, totalPeak = 0;
+    for (int i = 0; i < stdPlatform_numAllocTrack; i++)
+        aOrder[i] = i;
+    for (int i = 1; i < stdPlatform_numAllocTrack; i++) {
+        int v = aOrder[i], j = i - 1;
+        while (j >= 0 && stdPlatform_aAllocTrack[aOrder[j]].liveBytes < stdPlatform_aAllocTrack[v].liveBytes) {
+            aOrder[j + 1] = aOrder[j];
+            j--;
+        }
+        aOrder[j + 1] = v;
+    }
+    stdPlatform_Printf("=== alloc catalog (live KB / peak KB / count / total allocs) ===\n");
+    for (int i = 0; i < stdPlatform_numAllocTrack; i++) {
+        stdAllocTrackEnt* ent = &stdPlatform_aAllocTrack[aOrder[i]];
+        const char* pName = ent->pFile;
+        for (const char* c = pName; *c; c++)
+            if (*c == '/' || *c == '\\') pName = c + 1;
+        stdPlatform_Printf("%7.1f %7.1f %5d %6u  %s\n",
+            ent->liveBytes / 1024.0, ent->peakBytes / 1024.0,
+            ent->liveCount, ent->totalAllocs, pName);
+        totalLive += ent->liveBytes;
+        totalPeak += ent->peakBytes;
+    }
+    stdPlatform_Printf("=== total live %d KB (sum of peaks %d KB, %d untracked frees) ===\n",
+        (int)(totalLive / 1024), (int)(totalPeak / 1024), stdPlatform_allocTrackUntracked);
+}
+
+// Added: does this pointer live in memory that drops byte-granular stores?
+// Callers use it to decide between a direct fileRead and a word-safe bounce.
+int stdPlatform_IsWordAddressableOnly(const void* p)
+{
+#ifdef TARGET_DREAMCAST
+    extern void DC_GetVramArenaBounds(uintptr_t* pBase, uintptr_t* pEnd);
+    uintptr_t base, end;
+    DC_GetVramArenaBounds(&base, &end);
+    return base && (uintptr_t)p >= base && (uintptr_t)p < end;
+#elif defined(TARGET_TWL)
+    // Added: the slot-2 extram alt-mspace (16/32-bit stores only)
+    return openjkdf2_mem_alt_mspace_wordonly
+        && (intptr_t)p >= openjkdf2_mem_alt_mspace_start
+        && (intptr_t)p < openjkdf2_mem_alt_mspace_end;
+#else
+    (void)p;
+    return 0;
+#endif
+}
+
+// Added:
+// memcpy/memset that never issue byte stores, for word-addressable-only
+// destinations (Dreamcast VRAM, NDS slot-2 RAM -- their buses drop byte enables
+// on writes; byte reads are fine). Exact length, any src/dst alignment: unaligned
+// edges use 16-bit read-modify-write, bulk uses 32-bit stores (little-endian).
+void stdPlatform_Memzero32(void* dst, uint32_t len)
+{
+#ifdef TARGET_GAMECUBE
+    // Added: all GameCube RAM is byte-addressable, and the word-assembly below
+    // assumes a little-endian host.
+    memset(dst, 0, len);
+    return;
+#endif
+    uint8_t* pDst = (uint8_t*)dst;
+    if (len && ((uintptr_t)pDst & 1)) {
+        stdPlatform_WriteByte16(pDst, 0);
+        pDst++; len--;
+    }
+    if (len >= 2 && ((uintptr_t)pDst & 2)) {
+        *(uint16_t*)pDst = 0;
+        pDst += 2; len -= 2;
+    }
+    for (; len >= 4; len -= 4, pDst += 4)
+        *(uint32_t*)pDst = 0;
+    if (len >= 2) {
+        *(uint16_t*)pDst = 0;
+        pDst += 2; len -= 2;
+    }
+    if (len)
+        stdPlatform_WriteByte16(pDst, 0);
+}
+
+void stdPlatform_Memset32(void* dst, uint8_t val, uint32_t len)
+{
+#ifdef TARGET_GAMECUBE
+    // Added: all GameCube RAM is byte-addressable, and the word-assembly below
+    // assumes a little-endian host.
+    memset(dst, val, len);
+    return;
+#endif
+    uint8_t* pDst = (uint8_t*)dst;
+    uint32_t pattern = val * 0x01010101u;
+    if (len && ((uintptr_t)pDst & 1)) {
+        stdPlatform_WriteByte16(pDst, val);
+        pDst++; len--;
+    }
+    if (len >= 2 && ((uintptr_t)pDst & 2)) {
+        *(uint16_t*)pDst = (uint16_t)pattern;
+        pDst += 2; len -= 2;
+    }
+    for (; len >= 4; len -= 4, pDst += 4)
+        *(uint32_t*)pDst = pattern;
+    if (len >= 2) {
+        *(uint16_t*)pDst = (uint16_t)pattern;
+        pDst += 2; len -= 2;
+    }
+    if (len)
+        stdPlatform_WriteByte16(pDst, val);
+}
+
+void stdPlatform_Memcpy32(void* dst, const void* src, uint32_t len)
+{
+#ifdef TARGET_GAMECUBE
+    // Added: all GameCube RAM is byte-addressable, and the word-assembly below
+    // assumes a little-endian host.
+    memmove(dst, src, len);
+    return;
+#endif
+    uint8_t* pDst = (uint8_t*)dst;
+    const uint8_t* pSrc = (const uint8_t*)src;
+    if (len && ((uintptr_t)pDst & 1)) {
+        stdPlatform_WriteByte16(pDst, *pSrc);
+        pDst++; pSrc++; len--;
+    }
+    if (len >= 2 && ((uintptr_t)pDst & 2)) {
+        *(uint16_t*)pDst = (uint16_t)pSrc[0] | ((uint16_t)pSrc[1] << 8);
+        pDst += 2; pSrc += 2; len -= 2;
+    }
+    if (!((uintptr_t)pSrc & 3)) {
+        // Fast path: src co-aligned, straight 32-bit copies
+        for (; len >= 4; len -= 4, pDst += 4, pSrc += 4)
+            *(uint32_t*)pDst = *(const uint32_t*)pSrc;
+    } else {
+        // Src misaligned: assemble words from byte reads (always safe)
+        for (; len >= 4; len -= 4, pDst += 4, pSrc += 4)
+            *(uint32_t*)pDst = (uint32_t)pSrc[0] | ((uint32_t)pSrc[1] << 8) |
+                               ((uint32_t)pSrc[2] << 16) | ((uint32_t)pSrc[3] << 24);
+    }
+    if (len >= 2) {
+        *(uint16_t*)pDst = (uint16_t)pSrc[0] | ((uint16_t)pSrc[1] << 8);
+        pDst += 2; pSrc += 2; len -= 2;
+    }
+    if (len)
+        stdPlatform_WriteByte16(pDst, *pSrc);
+}

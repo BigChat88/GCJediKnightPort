@@ -1,0 +1,689 @@
+#include "Win95/Window.h"
+
+#include "Win95/stdGdi.h"
+#include "Platform/std3D.h"
+#include "Main/Main.h"
+#include "Main/jkMain.h"
+#include "Main/jkGame.h"
+#include "Gui/jkGUI.h"
+#include "Win95/stdDisplay.h"
+#include "World/jkPlayer.h"
+#include "Platform/stdControl.h"
+#include "stdPlatform.h"
+#include "Devices/sithConsole.h"
+#include "Platform/wuRegistry.h"
+#include "Main/jkQuakeConsole.h"
+#include "Gui/jkGUIRend.h"
+
+#ifdef TARGET_DREAMCAST
+
+#include <dc/maple.h>
+#include <dc/maple/controller.h>
+#include <dc/maple/keyboard.h>
+#include <dc/maple/mouse.h>
+
+extern int jkGuiBuildMulti_bRendering;
+
+static int dword_855E98 = 0;
+static int dword_855DE4 = 0;
+
+int Window_lastXRel = 0;
+int Window_lastYRel = 0;
+int Window_lastSampleTime = 0;
+int Window_lastSampleMs = 0;
+int Window_bMouseLeft = 0;
+int Window_bMouseRight = 0;
+int Window_resized = 0;
+int Window_mouseX = 0;
+int Window_mouseY = 0;
+int Window_mouseWheelX = 0;
+int Window_mouseWheelY = 0;
+int Window_lastMouseX = 0;
+int Window_lastMouseY = 0;
+int Window_xPos = 0;
+int Window_yPos = 0;
+int last_jkGame_isDDraw = 0;
+#ifdef QUAKE_CONSOLE
+int last_jkQuakeConsole_bOpen = 0;
+#endif
+int Window_menu_mouseX = 0;
+int Window_menu_mouseY = 0;
+extern int Window_needsRecreate;
+int Window_bFlipRequested = 0;
+
+void test_display()
+{
+    //static int idx = 0;
+    //swiWaitForVBlank();
+    //scanKeys();
+    //int keys = keysDown();
+    //if (keys & KEY_START) break;
+
+
+    // print at using ansi escape sequence \x1b[line;columnH 
+    //iprintf("\x1b[0;0HMain Window %u", idx++);
+    //printf("Main Window %u\n", idx++);
+    //printf("Heap: 0x%x/0x%x %p\n",  getHeapEnd() - getHeapStart(), getHeapLimit() - getHeapStart(), getHeapStart());
+}
+
+void Window_Main_Loop()
+{
+    test_display();
+
+    jkMain_GuiAdvance();
+    Window_msg_main_handler(g_hWnd, WM_PAINT, 0, 0);
+    
+    //Window_SdlUpdate();
+}
+
+int Window_Main_Linux(int argc, char** argv)
+{
+    char cmdLine[1024];
+    int result;
+    
+    //SDL_RenderClear(displayRenderer);
+    //SDL_RenderPresent(displayRenderer);
+    
+    
+    strcpy(cmdLine, "");
+    
+    g_handler_count = 0;
+    g_thing_two_some_dialog_count = 0;
+    g_should_exit = 0;
+    g_window_not_destroyed = 0;
+    g_hInstance = 0;//hInstance;
+    g_nShowCmd = 0;//nShowCmd;
+    
+    for (int i = 1; i < argc; i++)
+    {
+        strcat(cmdLine, argv[i]);
+        strcat(cmdLine, " ");
+    }
+    stdPlatform_Printf("cmdline: %s\n", cmdLine);
+    
+    result = Main_Startup(cmdLine);
+
+    int fullscreen = wuRegistry_GetBool("Window_isFullscreen", 0);
+    int hidpi = wuRegistry_GetBool("Window_isHiDpi", 0);
+    Window_SetFullscreen(fullscreen);
+    Window_SetHiDpi(hidpi);
+    //Window_RecreateSDL2Window();
+    Window_resized = 1;
+    Window_xSize = 640;
+    Window_ySize = 480;
+
+    if (!result) return result;
+
+    std3D_FreeResources();
+
+#if 0
+    if (Main_bHeadless)
+    {
+        if (displayWindow) {
+            std3D_FreeResources();
+            SDL_GL_DeleteContext(glWindowContext);
+            SDL_DestroyWindow(displayWindow);
+        }
+    }
+#endif
+//while(1){test_display();}
+    g_window_not_destroyed = 1;
+    
+    Window_msg_main_handler(g_hWnd, WM_CREATE, 0, 0); // WM_CREATE
+    Window_msg_main_handler(g_hWnd, WM_ACTIVATE, 2, 0); // WM_ACTIVATE
+    Window_msg_main_handler(g_hWnd, WM_ACTIVATEAPP, 1, 0); // WM_ACTIVATEAPP
+    Window_msg_main_handler(g_hWnd, WM_SHOWWINDOW, 0, 0); // WM_SHOWWINDOW
+    Window_msg_main_handler(g_hWnd, WM_PAINT, 0, 0);
+
+    while (1)
+    {
+        Window_Main_Loop();
+        if (g_should_exit) break;
+    }
+
+    // Added
+    if (jkPlayer_bHasLoadedSettingsOnce) {
+        jkPlayer_WriteConf(jkPlayer_playerShortName);
+    }
+
+    Main_Shutdown();
+    return 1;
+}
+
+int Window_DefaultHandler(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, void* unused)
+{
+    return 0;
+}
+
+int Window_ShowCursorUnwindowed(int a1)
+{
+    return stdControl_ShowMouseCursor(a1);
+}
+
+int last_draw_ms = 0;
+int Window_MessageLoop()
+{
+    jkGuiRend_UpdateController();
+    Window_SdlUpdate();
+
+    // TODO: poll the Dreamcast controller/keyboard via KOS maple here.
+
+    // Repaint + present when a flip was requested (set by the stdDisplay flip path).
+    if (Window_bFlipRequested) {
+        Window_msg_main_handler(g_hWnd, WM_PAINT, 0, 0);
+        Window_bFlipRequested = 0;
+    }
+    return 0;
+}
+
+// Posts menu/GUI input (keyboard navigation + typed text, controller navigation,
+// and the mouse cursor) as Window messages. In-game controls are read separately
+// in stdControl_ReadControls/ReadMouse; the mouse cursor here is gated to menus so
+// the look delta isn't consumed twice.
+void Window_DreamcastPollGui()
+{
+    // --- Keyboard ---
+    maple_device_t* kbd_dev = maple_enum_type(0, MAPLE_FUNC_KEYBOARD);
+    if (kbd_dev) {
+        kbd_state_t* kbd = kbd_get_state(kbd_dev);
+        if (kbd) {
+            // HID scancode -> Windows VK for navigation/control keys. `chr` => also
+            // emit WM_CHAR (the GUI expects both for Enter/Tab/Backspace).
+            static const struct { int sc; int vk; int chr; } specials[] = {
+                { 0x29, VK_ESCAPE, 1 }, { 0x28, VK_RETURN, 1 }, { 0x2A, VK_BACK, 1 },
+                { 0x2B, VK_TAB,    1 }, { 0x4F, VK_RIGHT,  0 }, { 0x50, VK_LEFT, 0 },
+                { 0x51, VK_DOWN,   0 }, { 0x52, VK_UP,     0 }, { 0x4B, VK_PRIOR, 0 },
+                { 0x4E, VK_NEXT,   0 }, { 0x4C, VK_DELETE, 0 }, { 0x4A, VK_HOME, 0 },
+                { 0x4D, VK_END,    0 },
+            };
+            for (int i = 0; i < (int)(sizeof(specials) / sizeof(specials[0])); i++) {
+                int sc = specials[i].sc;
+                if (sc >= KBD_MAX_KEYS) continue;
+                int v = kbd->key_states[sc].value;
+                if ((v & KEY_STATE_IS_DOWN) && !(v & KEY_STATE_WAS_DOWN)) {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, specials[i].vk, 0);
+                    if (specials[i].chr)
+                        Window_msg_main_handler(g_hWnd, WM_CHAR, specials[i].vk, 0);
+                }
+            }
+            // Typed printable characters (translated for shift/caps).
+            int k;
+            while ((k = kbd_queue_pop(kbd_dev, 1)) != KBD_QUEUE_END) {
+                if (k >= 32 && k < 127)
+                    Window_msg_main_handler(g_hWnd, WM_CHAR, k, 0);
+            }
+        }
+    }
+
+    // --- Controller: drive menu navigation ---
+    maple_device_t* cont_dev = maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
+    if (cont_dev) {
+        cont_state_t* st = (cont_state_t*)maple_dev_status(cont_dev);
+        if (st) {
+            static uint32_t prevButtons = 0;
+            uint32_t pressed = st->buttons & ~prevButtons;
+            // Update edge state BEFORE dispatching (these handlers can re-enter this
+            // poll via a nested GUI message loop -- see the mouse note below).
+            prevButtons = st->buttons;
+            // NOTE: the d-pad is intentionally NOT posted here. jkGuiRend's own
+            // joystick poll reads the d-pad via stdControl (KEY_JOY1_H*) and now
+            // edge-detects it; posting WM_KEYFIRST here too would double every move.
+            if (pressed & CONT_A) {
+                //Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_RETURN, 0);
+                //Window_msg_main_handler(g_hWnd, WM_CHAR, VK_RETURN, 0);
+            }
+            if ((pressed & CONT_START) /*|| (!jkGame_isDDraw && (pressed & CONT_B))*/) {
+                stdPlatform_Printf("Escape!\n");
+                Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_ESCAPE, 0);
+                Window_msg_main_handler(g_hWnd, WM_CHAR, VK_ESCAPE, 0);
+            }
+        }
+    }
+
+    // --- Mouse cursor + buttons (menus only; in-game look is read in stdControl) ---
+    if (!jkGame_isDDraw) {
+        maple_device_t* mdev = maple_enum_type(0, MAPLE_FUNC_MOUSE);
+        if (mdev) {
+            mouse_state_t* m = (mouse_state_t*)maple_dev_status(mdev);
+            if (m) {
+                Window_mouseX += m->dx;
+                Window_mouseY += m->dy;
+                if (Window_mouseX < 0) Window_mouseX = 0;
+                if (Window_mouseY < 0) Window_mouseY = 0;
+                if (Window_mouseX >= Window_xSize) Window_mouseX = Window_xSize - 1;
+                if (Window_mouseY >= Window_ySize) Window_mouseY = Window_ySize - 1;
+                //stdPlatform_Printf("%d %d, %d %d %d %d\n", m->dx, m->dy, Window_mouseX, Window_mouseY, Window_xSize, Window_ySize);
+
+                static uint32_t prevMouseBtns = 0;
+                uint32_t mpos = (Window_mouseX & 0xFFFF) | ((Window_mouseY << 16) & 0xFFFF0000);
+
+                // Post a move event when the cursor actually moves so jkGuiRend
+                // repaints the cursor and flips (its WM_MOUSEMOVE handler does both).
+                // Without this the GUI cursor only updates on clicks.
+                if (m->dx || m->dy) {
+                    Window_msg_main_handler(g_hWnd, WM_MOUSEMOVE, 0, mpos);
+                    Window_bFlipRequested = 1;
+                }
+
+                int left  = !!(m->buttons & MOUSE_LEFTBUTTON);
+                int right = !!(m->buttons & MOUSE_RIGHTBUTTON);
+                int prevLeft  = !!(prevMouseBtns & MOUSE_LEFTBUTTON);
+                int prevRight = !!(prevMouseBtns & MOUSE_RIGHTBUTTON);
+
+                Window_bMouseLeft  = left;
+                Window_bMouseRight = right ? 2 : 0;
+
+                // Update the edge state BEFORE dispatching. WM_LBUTTONDOWN runs
+                // synchronously and, when the click opens a submenu, re-enters this
+                // poll through a nested GUI message loop. If prevMouseBtns weren't
+                // updated first, the nested poll would see the button as still a fresh
+                // press and fire the click again -> infinite recursion (stack overrun).
+                prevMouseBtns = m->buttons;
+
+                if (left  && !prevLeft)  Window_msg_main_handler(g_hWnd, WM_LBUTTONDOWN, 1, mpos);
+                if (!left && prevLeft)   Window_msg_main_handler(g_hWnd, WM_LBUTTONUP,   0, mpos);
+                if (right && !prevRight) Window_msg_main_handler(g_hWnd, WM_RBUTTONDOWN, 2, mpos);
+                if (!right && prevRight) Window_msg_main_handler(g_hWnd, WM_RBUTTONUP,   0, mpos);
+            }
+        }
+    }
+}
+
+void Window_SdlUpdate()
+{
+    if (Main_bHeadless)
+    {
+        return;
+    }
+
+    Window_DreamcastPollGui();
+
+#if 0
+    SDL_Event event;
+    SDL_MouseButtonEvent* mevent;
+
+    while (SDL_PollEvent(&event))
+    {
+        switch (event.type)
+        {
+            case SDL_JOYDEVICEADDED: {
+                stdControl_InitSdlJoysticks();
+                break;
+            }
+            case SDL_JOYDEVICEREMOVED: {
+                stdControl_InitSdlJoysticks();
+                break;
+            }
+
+            case SDL_TEXTINPUT:
+                for (int i = 0; i < _strlen(event.text.text); i++)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_CHAR, event.text.text[i], 0);
+                }
+                break;
+            case SDL_WINDOWEVENT:
+                Window_HandleWindowEvent(&event);
+                break;
+            case SDL_KEYDOWN:
+                //handleKey(&event.key.keysym, WM_KEYDOWN, 0x1);
+                if (event.key.keysym.sym == SDLK_ESCAPE)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_ESCAPE, event.key.repeat & 0xFFFF);
+                    Window_msg_main_handler(g_hWnd, WM_CHAR, VK_ESCAPE, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_PAGEUP)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_PRIOR, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_PAGEDOWN)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_NEXT, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_LEFT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_LEFT, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_RIGHT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_RIGHT, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_UP)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_UP, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_DOWN)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_DOWN, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_BACKSPACE)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_BACK, event.key.repeat & 0xFFFF);
+                    Window_msg_main_handler(g_hWnd, WM_CHAR, VK_BACK, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_DELETE)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_DELETE, event.key.repeat & 0xFFFF);
+                    //Window_msg_main_handler(g_hWnd, WM_CHAR, VK_DELETE, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_INSERT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_INSERT, event.key.repeat & 0xFFFF);
+                    Window_msg_main_handler(g_hWnd, WM_CHAR, VK_INSERT, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_RETURN)
+                {
+                    // HACK apparently Windows buffers these events in some way, but to replicate the behavior in jkGUI we just spam KEYFIRST
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_RETURN, event.key.repeat & 0xFFFF);
+                    Window_msg_main_handler(g_hWnd, WM_CHAR, VK_RETURN, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_LSHIFT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_LSHIFT, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_RSHIFT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_RSHIFT, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_TAB)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_TAB, event.key.repeat & 0xFFFF);
+                    Window_msg_main_handler(g_hWnd, WM_CHAR, VK_TAB, event.key.repeat & 0xFFFF);
+                }
+                else if (event.key.keysym.sym == SDLK_END)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_END, event.key.repeat & 0xFFFF);
+                    //Window_msg_main_handler(g_hWnd, WM_CHAR, 0x23, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_HOME)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_HOME, event.key.repeat & 0xFFFF);
+                    //Window_msg_main_handler(g_hWnd, WM_CHAR, 0x24, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_BACKQUOTE)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYFIRST, VK_OEM_3, event.key.repeat & 0xFFFF);
+                }
+
+                //if (!event.key.repeat)
+                //    stdControl_SetSDLKeydown(event.key.keysym.scancode, 1, event.key.timestamp);
+                break;
+            case SDL_KEYUP:
+                if (event.key.keysym.sym == SDLK_ESCAPE)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_ESCAPE, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_PAGEUP)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_PRIOR, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_PAGEDOWN)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_NEXT, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_LEFT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_LEFT, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_RIGHT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_RIGHT, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_UP)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_UP, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_DOWN)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_DOWN, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_BACKSPACE)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_BACK, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_DELETE)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_DELETE, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_INSERT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_INSERT, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_RETURN)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_RETURN, 0); // 0xB?
+                }
+                else if (event.key.keysym.sym == SDLK_LSHIFT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_LSHIFT, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_RSHIFT)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_RSHIFT, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_TAB)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_TAB, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_END)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_END, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_HOME)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_HOME, 0);
+                }
+                else if (event.key.keysym.sym == SDLK_BACKQUOTE)
+                {
+                    Window_msg_main_handler(g_hWnd, WM_KEYUP, VK_OEM_3, 0);
+                }
+                //handleKey(&event.key.keysym, WM_KEYUP, 0xc0000001);
+
+                if (jkQuakeConsole_bOpen) break; // Hijack all input to console
+
+                stdControl_SetSDLKeydown(event.key.keysym.scancode, 0, event.key.timestamp);
+                break;
+            case SDL_MOUSEMOTION:
+                Window_HandleMouseMove(&event.motion);
+                break;
+            case SDL_MOUSEBUTTONDOWN:
+            case SDL_MOUSEBUTTONUP:
+
+                mevent = (SDL_MouseButtonEvent*)&event;
+                left = 0;
+                right = 0;
+                hasLeft = 0;
+                hasRight = 0;
+                if (event.type == SDL_MOUSEBUTTONDOWN)
+                {
+                    left = (mevent->button == SDL_BUTTON_LEFT ? 1 : 0);
+                    right = (mevent->button == SDL_BUTTON_RIGHT ? 2 : 0);
+                    
+                    if (left)
+                        hasLeft = 1;
+                    if (right)
+                        hasRight = 1;
+                }
+                else if (event.type == SDL_MOUSEBUTTONUP)
+                {
+                    left = (mevent->button == SDL_BUTTON_LEFT ? 0 : 1);
+                    right = (mevent->button == SDL_BUTTON_RIGHT ? 0 : 2);
+                    
+                    if (!left)
+                        hasLeft = 1;
+                    if (!right)
+                        hasRight = 1;
+                }
+                
+                if (hasLeft)
+                    Window_bMouseLeft = left;
+                if (hasRight)
+                    Window_bMouseRight = right;
+
+                Window_mouseX = mevent->x;
+                Window_mouseY = mevent->y;// - (Window_ySize - 480);
+
+                pos = ((Window_mouseX) & 0xFFFF) | (((Window_mouseY) << 16) & 0xFFFF0000);
+                msgl = (event.type == SDL_MOUSEBUTTONDOWN ? WM_LBUTTONDOWN : WM_LBUTTONUP);
+                msgr = (event.type == SDL_MOUSEBUTTONDOWN ? WM_RBUTTONDOWN : WM_RBUTTONUP);
+
+                if (jkQuakeConsole_bOpen) break; // Hijack all input to console
+                
+                if (hasLeft)
+                    Window_msg_main_handler(g_hWnd, msgl, left | right, pos);
+                if (hasRight)
+                    Window_msg_main_handler(g_hWnd, msgr, left | right, pos);
+
+                //stdControl_UpdateKeyState(KEY_MOUSE_B1, Window_bMouseLeft, mevent->timestamp);
+                //stdControl_UpdateKeyState(KEY_MOUSE_B2, Window_bMouseRight, mevent->timestamp);
+
+                break;
+            case SDL_MOUSEWHEEL:
+                Window_mouseWheelY = event.wheel.y;
+                Window_mouseWheelX = event.wheel.x;
+
+                if (jkQuakeConsole_bOpen) break; // Hijack all input to console
+                break;
+            case SDL_QUIT:
+                stdPlatform_Printf("Quit!\n");
+
+                // Added
+                if (jkPlayer_bHasLoadedSettingsOnce) {
+                    jkPlayer_WriteConf(jkPlayer_playerShortName);
+                }
+                
+                exit(-1);
+                break;
+            default:
+                break;
+        }
+    }
+#endif
+    if (Window_resized)
+    {
+        jkMain_FixRes();
+        if (!jkGui_SetModeMenu(0))
+        {
+            stdDisplay_SetMode(0, 0, 0);
+            //jkMain_FixRes();
+        }
+
+        jkGui_SetModeGame();
+        
+        Window_resized = 0;
+    }
+    
+    static int sampleTime_delay = 0;
+    int sampleTime_roundtrip = stdPlatform_GetTimeMsec() - Window_lastSampleTime;
+    //printf("total %u\n", sampleTime_roundtrip);
+    //stdPlatform_PrintHeapStats();
+    Window_lastSampleTime = stdPlatform_GetTimeMsec(); // TODO
+
+    static int jkPlayer_enableVsync_last = 0;
+    int menu_framelimit_amt_ms = 16;
+
+    if (jkPlayer_enableVsync_last != jkPlayer_enableVsync)
+    {
+        //SDL_GL_SetSwapInterval(jkPlayer_enableVsync);
+    }
+
+    //printf("Window_SdlUpdate %x %x\n", jkGame_isDDraw, jkGuiBuildMulti_bRendering);
+
+    if (!jkGame_isDDraw)
+    {
+        // Restore menu mouse position
+        if (jkGame_isDDraw != last_jkGame_isDDraw) {
+            //SDL_WarpMouseInWindow(displayWindow, Window_menu_mouseX, Window_menu_mouseY);
+        }
+
+        //SDL_SetRelativeMouseMode(SDL_FALSE);
+
+        //jkGuiRend_UpdateController();
+
+        if (!jkGuiBuildMulti_bRendering) {
+            std3D_StartScene();
+            //jkQuakeConsole_Render();
+            std3D_DrawMenu();
+            std3D_EndScene();
+            //SDL_GL_SwapWindow(displayWindow);
+        }
+        else {
+            //jkQuakeConsole_Render();
+            std3D_DrawMenu();
+            //SDL_GL_SwapWindow(displayWindow);
+            //menu_framelimit_amt_ms = 64;
+        }
+
+        if (Window_needsRecreate) {
+            std3D_PurgeEntireTextureCache();
+            //Window_RecreateSDL2Window();
+            Window_resized = 1;
+            Window_needsRecreate = 0;
+        }
+        
+        // Keep menu FPS at 60FPS, to avoid cranking the GPU unnecessarily.
+        if (sampleTime_roundtrip < menu_framelimit_amt_ms) {
+            sampleTime_delay++;
+        }
+        else {
+            sampleTime_delay--;
+        }
+        if (sampleTime_delay <= 0) {
+            sampleTime_delay = 1;
+        }
+        if (sampleTime_delay >= menu_framelimit_amt_ms) {
+            sampleTime_delay = menu_framelimit_amt_ms;
+        }
+        //SDL_Delay(sampleTime_delay);
+    }
+    else
+    {
+        // Save mouse position for menu
+        if (jkGame_isDDraw != last_jkGame_isDDraw) {
+            Window_menu_mouseX = Window_mouseX;
+            Window_menu_mouseY = Window_mouseY;
+            Window_lastXRel = 0;
+            Window_lastYRel = 0;
+        }
+
+#ifdef QUAKE_CONSOLE
+        if (jkQuakeConsole_bOpen && jkQuakeConsole_bOpen != last_jkQuakeConsole_bOpen) {
+            //SDL_WarpMouseInWindow(displayWindow, Window_menu_mouseX, Window_menu_mouseY);
+        }
+        else if (!jkQuakeConsole_bOpen && jkQuakeConsole_bOpen != last_jkQuakeConsole_bOpen) {
+            Window_menu_mouseX = Window_mouseX;
+            Window_menu_mouseY = Window_mouseY;
+            Window_lastXRel = 0;
+            Window_lastYRel = 0;
+        }
+
+        if (jkQuakeConsole_bOpen)
+        {
+            //SDL_SetRelativeMouseMode(SDL_FALSE);
+        }
+
+        if (!jkQuakeConsole_bOpen /*&& SDL_GetWindowFlags(displayWindow) & SDL_WINDOW_MOUSE_FOCUS*/) {
+            //SDL_SetRelativeMouseMode(SDL_TRUE);
+            //SDL_WarpMouseInWindow(displayWindow, 100, 100);
+        }
+        else
+        {
+            //SDL_SetRelativeMouseMode(SDL_FALSE);
+        }
+#endif
+    }
+
+    jkPlayer_enableVsync_last = jkPlayer_enableVsync;
+
+    last_jkGame_isDDraw = jkGame_isDDraw;
+#ifdef QUAKE_CONSOLE
+    last_jkQuakeConsole_bOpen = jkQuakeConsole_bOpen;
+#endif
+}
+
+void Window_SdlVblank()
+{
+    if (Main_bHeadless) return;
+    //swiWaitForVBlank();
+}
+
+#endif

@@ -1,0 +1,1653 @@
+#include "sithSurface.h"
+
+#include "stdPlatform.h"
+#include "General/stdHashtbl.h"
+#include "General/stdMath.h"
+#include "World/sithWorld.h"
+#include "World/jkPlayer.h"
+#include "World/sithSector.h"
+#include "Engine/sithIntersect.h"
+#include "World/sithThing.h"
+#include "World/sithMaterial.h"
+#include "Gameplay/sithTime.h"
+#include "Dss/sithDSS.h"
+#include "jk.h"
+
+#if defined(TARGET_TWL) || defined(TARGET_GAMECUBE)
+uint8_t sithSurface_skyColorGuess = 0;
+#endif
+#ifdef TARGET_GAMECUBE
+int sithSurface_gcbSkyColorKnown = 0; // Added: the level has a sky (else the fog is dark grey)
+#endif
+
+int sithSurface_Startup()
+{
+    _memset(sithSurface_aSurfaces, 0, sizeof(rdSurface) * 256); // sizeof(sithSurface_aSurfaces)
+
+    for (int i = 255; i >= 0; i--)
+    {
+        sithSurface_aAvail[i+1] = 255-i;
+    }
+
+    sithSurface_numAvail = 256;
+    sithSurface_numSurfaces = 0;
+    return 1;
+}
+
+void sithSurface_Shutdown()
+{
+    ;
+}
+
+int sithSurface_Open()
+{
+    sithSurface_bOpened = 1;
+    return 1;
+}
+
+int sithSurface_Startup2()
+{
+    sithSurface_Startup();
+    sithSurface_bOpened = 0;
+    return 1;
+}
+
+int sithSurface_Startup3()
+{
+    return sithSurface_Startup();
+}
+
+int sithSurface_ReadSurfacesListText(SithWorld *pWorld)
+{
+    uint32_t numAdjoins; // ebp
+    uint32_t allocSize; // esi
+    SithSurfaceAdjoin *adjoins; // eax
+    uint32_t mirror; // eax
+    SithSurface *surfaces; // esi
+    int32_t v20; // eax
+    int32_t adjoinIdx; // eax
+    SithSurfaceAdjoin *surfaceAdjoin; // ecx
+    int32_t wallCel; // edx
+    flex_d_t v32; // st7
+    char *v33; // eax
+    uint32_t v34; // ebp
+    uint32_t v40; // ebx
+    uint32_t v43; // edi
+    uint32_t v50; // edi
+    int32_t v52; // edx
+    rdTexinfo *v53; // eax
+    char *distStr; // [esp-4h] [ebp-30h]
+    uint32_t numSurfaces; // [esp+18h] [ebp-14h] BYREF
+    rdTexinfo *v66; // [esp+24h] [ebp-8h] BYREF
+    int32_t v61;
+
+    SITH_ASSERTREL(pWorld != NULL); // Added: ported from OpenJones3D
+
+    if ( !stdConffile_ReadLine() || _sscanf(stdConffile_g_aLine, " world adjoins %d", &numAdjoins) != 1 ) {
+        stdPrintf(
+            pSithHS->errorPrint,
+            ".\\World\\sithSurface.c",
+            0,
+            "OpenJKDF2: Failed to get num adjoins `%s`\n",
+            stdConffile_g_aLine);
+        return 0;
+    }
+    if ( numAdjoins )
+    {
+#ifdef TARGET_TWL
+        // Added: was HEAP_FAST -- adjoins are ~100KB on big maps and never fit
+        // NWRAM; all fields/writes are word-width (audited), so extram instead.
+        int prevSuggest = pSithHS->suggestHeap(HEAP_WORD_ADDRESSABLE);
+#elif defined(STDPLATFORM_HEAP_SUGGESTIONS)
+        int prevSuggest = pSithHS->suggestHeap(HEAP_FAST);
+#endif
+        allocSize = sizeof(SithSurfaceAdjoin) * numAdjoins;
+        adjoins = (SithSurfaceAdjoin *)SITH_ALLOC(sizeof(SithSurfaceAdjoin) * numAdjoins);
+#ifdef STDPLATFORM_HEAP_SUGGESTIONS
+        pSithHS->suggestHeap(prevSuggest);
+#endif
+        pWorld->adjoins = adjoins;
+        if ( !adjoins ) {
+            stdPrintf(
+                pSithHS->errorPrint,
+                ".\\World\\sithSurface.c",
+                0,
+                "OpenJKDF2: Failed to allocate %u adjoins\n",
+                numAdjoins);
+            return 0;
+        }
+        stdPlatform_Memzero32(adjoins, allocSize); // Added: word-safe
+        pWorld->numAdjoins = numAdjoins;
+        pWorld->numAdjoinsLoaded = 0;
+    }
+    else
+    {
+        pWorld->adjoins = 0;
+    }
+
+    pWorld->numAdjoinsLoaded = numAdjoins;
+    for (int32_t i = 0; i < pWorld->numAdjoinsLoaded; i++)
+    {
+        if ( !stdConffile_ReadArgs() )
+            return 0;
+        if ( _sscanf(stdConffile_g_entry.aArgs[1].value, "%x", &pWorld->adjoins[i].flags) != 1 )
+            return 0;
+
+        mirror = _atoi(stdConffile_g_entry.aArgs[2].value);
+        if ( mirror >= pWorld->numAdjoinsLoaded )
+            return 0;
+        distStr = stdConffile_g_entry.aArgs[3].value;
+        pWorld->adjoins[i].mirror = &pWorld->adjoins[mirror];
+        pWorld->adjoins[i].dist = _atof(distStr);
+    }
+    if (!stdConffile_ReadLine())
+    {
+        stdPrintf(
+                pSithHS->errorPrint,
+                ".\\World\\sithSurface.c",
+                0,
+                "OpenJKDF2: Failed to read line?\n",
+                numAdjoins);
+        return 0;
+    }
+    
+    if ( _sscanf(stdConffile_g_aLine, " world surfaces %d", &numSurfaces) != 1 )
+    {
+        stdPrintf(
+                pSithHS->errorPrint,
+                ".\\World\\sithSurface.c",
+                0,
+                "OpenJKDF2: Failed to get num surfaces? `%s`\n",
+                stdConffile_g_aLine);
+        return 0;
+    }
+
+#ifdef STDPLATFORM_HEAP_SUGGESTIONS
+    int prevSuggest = pSithHS->suggestHeap(HEAP_FAST);
+#endif
+    pWorld->surfaces = (SithSurface *)SITH_ALLOC(sizeof(SithSurface) * numSurfaces);
+#ifdef STDPLATFORM_HEAP_SUGGESTIONS
+    pSithHS->suggestHeap(prevSuggest);
+#endif
+    if (!pWorld->surfaces)
+    {
+        stdPrintf(
+                pSithHS->errorPrint,
+                ".\\World\\sithSurface.c",
+                0,
+                "OpenJKDF2: Failed to alloc %u surfaces\n",
+                numSurfaces);
+        return 0;
+    }
+
+    _memset(pWorld->surfaces, 0, sizeof(SithSurface) * numSurfaces);
+    pWorld->numSurfaces = numSurfaces;
+#ifdef TARGET_GAMECUBE
+    sithSurface_gcbSkyColorKnown = 0; // Added: this level's sky, not the previous one's
+#endif
+    for (int32_t v14 = 0; v14 < numSurfaces; v14++)
+    {
+        rdFace_NewEntry(&pWorld->surfaces[v14].surfaceInfo.face);
+        pWorld->surfaces[v14].index = v14;
+    }
+    surfaces = pWorld->surfaces;
+
+#ifdef SITHSURFACE_POOLED_ARRAYS
+    // Added: one pool for every surface's index/intensity arrays (3 tiny allocs
+    // per surface otherwise). Fields hold offset+1 until the fixup after the loop.
+    int poolUsed = 0, poolCap = 0;
+    int* pIdxPool = NULL;
+#ifdef TARGET_GAMECUBE
+    // Added: on the console the pool is a chain of 64 KiB blocks instead of one
+    // array grown to ~1 MiB: after a few levels the heap rarely has a contiguous
+    // MiB left (8+ MiB free in pieces), and the big levels failed to load here.
+    // Each block starts with the pointer to the next one (2 ints, keeps 8-byte
+    // alignment); fields point straight into the blocks, so no fixup is needed.
+    int* pBlockCur = NULL;
+    int blockUsed = 0;
+    (void)poolCap;
+#endif
+#endif
+    for (int32_t v67 = 0; v67 < numSurfaces; v67++)
+    {
+        SithSurface* surfaceIter = &surfaces[v67];
+        sithSurfaceInfo* surfaceInfo = &surfaceIter->surfaceInfo;
+        rdFace* face = &surfaceInfo->face;
+
+        if ( !stdConffile_ReadArgs() )
+            return 0;
+        v20 = _atoi(stdConffile_g_entry.aArgs[1].value);
+        if ( v20 >= 0 )
+        {
+            if ( v20 >= sithMaterial_numMaterials )
+                return 0;
+            face->material = sithMaterial_aMaterials[v20];
+            rdMaterial_EnsureMetadata(face->material); // Added: we don't need VBuffers yet
+        }
+        else
+        {
+            face->material = 0;
+        }
+
+        if ( _sscanf(stdConffile_g_entry.aArgs[2].value, "%x", &surfaceIter->flags) != 1 )
+            return 0;
+
+        if ( _sscanf(stdConffile_g_entry.aArgs[3].value, "%x", &face->type) != 1 )
+            return 0;
+        if ( (sithSurface_byte_8EE668 & 1) == 0 )
+        {
+            face->type &= ~4;
+        }
+        face->geometryMode = (rdGeoMode_t)_atoi(stdConffile_g_entry.aArgs[4].value);
+
+        if ( face->material )
+        {
+            if ( (face->material->tex_type & 2) == 0 )
+            {
+                face->geometryMode = RD_GEOMETRY_SOLID;
+                surfaceIter->flags &= ~(SITH_SURFACE_CEILING_SKY | SITH_SURFACE_HORIZON_SKY);
+            }
+        }
+        else
+        {
+            face->geometryMode = RD_GEOMETRY_NONE;
+        }
+        face->lightingMode = (rdLightMode_t)_atoi(stdConffile_g_entry.aArgs[5].value);
+        
+        if (surfaceIter->flags & (SITH_SURFACE_CEILING_SKY | SITH_SURFACE_HORIZON_SKY)) {
+            face->lightingMode = RD_LIGHTMODE_FULLYLIT;
+
+            // Guess the sky color for fog
+#ifdef TARGET_TWL
+            rdMaterial_EnsureDataForced(face->material);
+            if (face->material && face->material->bDataLoaded) {
+                rdMaterial* mat = face->material;
+                rdTexture* texture = &mat->textures[0];
+                tVBuffer* lowestMipBuf = NULL;
+                for (int mip = 0; mip < texture->num_mipmaps; mip++) {
+                    if (!texture->texture_struct) continue;
+                    tVBuffer* buf = texture->texture_struct[mip];
+                    if (buf && buf->surface_lock_alloc && !buf->format.format.is16bit) {
+                        lowestMipBuf = buf;
+                    }
+                }
+                if (lowestMipBuf && mat->texinfos && mat->texinfos[0]) {
+                    uint32_t pxIdx = (lowestMipBuf->format.width * lowestMipBuf->format.height/2);
+                                     //+ (lowestMipBuf->format.width / 2);
+                    //sithSurface_skyColorGuess = lowestMipBuf->surface_lock_alloc[pxIdx];
+                    sithSurface_skyColorGuess = mat->texinfos[0]->header.solidColor;
+                }
+            }
+#elif defined(TARGET_GAMECUBE)
+            // Added: the sky material's average colour, for the optional fog (std3D).
+            if (face->material && face->material->texinfos && face->material->texinfos[0]) {
+                sithSurface_skyColorGuess = face->material->texinfos[0]->header.solidColor;
+                sithSurface_gcbSkyColorKnown = 1;
+            }
+#endif
+        }
+
+        face->textureMode = (rdTexMode_t)_atoi(stdConffile_g_entry.aArgs[6].value);
+        adjoinIdx = _atoi(stdConffile_g_entry.aArgs[7].value);
+        if ( adjoinIdx == -1 )
+        {
+            surfaceIter->pAdjoin = 0;
+        }
+        else
+        {
+            surfaceAdjoin = &pWorld->adjoins[adjoinIdx];
+
+            surfaceIter->pAdjoin = surfaceAdjoin;
+            surfaceAdjoin->surface = surfaceIter;
+            if ( face->material )
+            {
+                wallCel = face->wallCel;
+                if ( wallCel == -1 )
+                    wallCel = face->material->curCelNum;
+                v66 = face->material->texinfos[wallCel];
+            }
+            else {
+                v66 = NULL; // Added
+            }
+            if ( (pWorld->adjoins[adjoinIdx].flags & 1) == 0
+              || (face->material 
+                  && face->geometryMode 
+                  && (face->type & 2) == 0 
+                  && (v66 && ((v66->header.texture_type & 8) == 0 
+                      || (v66->texture_ptr && v66->texture_ptr->alpha_en & 1) == 0)))
+                     ) // Added: v66->texture_ptr check, TODO: Should this have an EnsureWhatever?
+            {
+                surfaceAdjoin->flags |= SITHSURF_ADJOIN_80;
+            }
+        }
+        v32 = _atof(stdConffile_g_entry.aArgs[8].value);
+        v33 = stdConffile_g_entry.aArgs[9].value;
+        face->extraLight = v32;
+        v34 = _atoi(v33);
+        if ( v34 < 3 )
+            return 0;
+        if ( v34 > stdConffile_g_entry.numArgs - 10 )
+            return 0;
+        if ( v34 > 0x18 )
+            return 0;
+
+        int bSurfHasUV = (face->material && (face->material->tex_type & 2)) ? 1 : 0; // Added: hoisted
+        int* pPosIdx;
+        int* pUVIdx = NULL;
+        flex_t* pIntens = NULL;
+#ifdef SITHSURFACE_POOLED_ARRAYS
+        {
+            // Added: grab pos/uv/intensity storage from the world pool (fields hold
+            // offset+1 until the post-loop fixup; the pool moves while growing).
+            int needIntens = (v34 * 4) + 1; // JKM_LIGHTING layout; >= v34 either way
+            int need = v34 * (bSurfHasUV ? 2 : 1) + needIntens;
+#ifdef TARGET_GAMECUBE
+            if (!pBlockCur || blockUsed + need > SITHSURFACE_GC_POOL_BLOCK) {
+                int* pBlk = (int*)SITH_ALLOC(sizeof(int) * SITHSURFACE_GC_POOL_BLOCK);
+                if (!pBlk)
+                    return 0;
+                ((int**)pBlk)[0] = NULL;
+                if (pBlockCur)
+                    ((int**)pBlockCur)[0] = pBlk;
+                else
+                    pIdxPool = pWorld->paSurfaceIdxPool = pBlk;
+                pBlockCur = pBlk;
+                blockUsed = 2;
+            }
+            pPosIdx = pBlockCur + blockUsed;
+            face->vertexPosIdx = pPosIdx;
+            blockUsed += v34;
+            if (bSurfHasUV) {
+                pUVIdx = pBlockCur + blockUsed;
+                face->vertexUVIdx = pUVIdx;
+                blockUsed += v34;
+            }
+            pIntens = (flex_t*)(pBlockCur + blockUsed);
+            surfaceInfo->intensities = pIntens;
+            blockUsed += needIntens;
+            poolUsed += need;
+            _memset(pIntens, 0, sizeof(flex_t) * needIntens);
+#else
+            if (poolUsed + need > poolCap) {
+                int newCap = poolCap ? poolCap * 2 : 4096;
+                while (newCap < poolUsed + need)
+                    newCap *= 2;
+                int* pNewPool = (int*)SITH_REALLOC(pIdxPool, sizeof(int) * newCap);
+                if (!pNewPool)
+                    return 0;
+                pIdxPool = pNewPool;
+                poolCap = newCap;
+                pWorld->paSurfaceIdxPool = pIdxPool; // keep current for the fail path
+            }
+            pPosIdx = pIdxPool + poolUsed;
+            face->vertexPosIdx = (int*)(intptr_t)(poolUsed + 1);
+            poolUsed += v34;
+            if (bSurfHasUV) {
+                pUVIdx = pIdxPool + poolUsed;
+                face->vertexUVIdx = (int*)(intptr_t)(poolUsed + 1);
+                poolUsed += v34;
+            }
+            pIntens = (flex_t*)(pIdxPool + poolUsed);
+            surfaceInfo->intensities = (flex_t*)(intptr_t)(poolUsed + 1);
+            poolUsed += needIntens;
+            _memset(pIntens, 0, sizeof(flex_t) * needIntens);
+#endif // TARGET_GAMECUBE
+        }
+#else
+        face->vertexPosIdx = (int*)SITH_ALLOC(sizeof(int) * v34);
+        if ( !face->vertexPosIdx )
+            return 0;
+        pPosIdx = face->vertexPosIdx;
+
+#ifndef JKM_LIGHTING
+        surfaceInfo->intensities = (flex_t*)SITH_ALLOC(sizeof(flex_t) * v34);
+        if ( !surfaceInfo->intensities )
+            return 0;
+        pIntens = surfaceInfo->intensities;
+#endif
+#endif // SITHSURFACE_POOLED_ARRAYS
+
+        if (bSurfHasUV)
+        {
+#ifndef SITHSURFACE_POOLED_ARRAYS
+            face->vertexUVIdx = (int*)SITH_ALLOC(sizeof(int) * v34);
+            if ( !face->vertexUVIdx )
+                return 0;
+            pUVIdx = face->vertexUVIdx;
+#endif
+            v61 = 10;
+            for (v40 = 0; v40 < v34; v40++)
+            {
+                pPosIdx[v40] = _atoi(stdConffile_g_entry.aArgs[v61].value);
+                pUVIdx[v40] = _atoi(stdConffile_g_entry.aArgs[v61+1].value);
+                v61 += 2;
+            }
+        }
+        else
+        {
+#ifndef SITHSURFACE_POOLED_ARRAYS
+            face->vertexUVIdx = 0;
+#endif
+            v61 = 10;
+            for (v43 = 0; v43 < v34; v43++)
+            {
+                pPosIdx[v43] = _atoi(stdConffile_g_entry.aArgs[v61].value);
+                v61 += 2;
+            }
+        }
+
+#ifndef JKM_LIGHTING
+        for (int32_t v45 = 0; v45 < v34; v45++)
+        {
+            pIntens[v45] = _atof(stdConffile_g_entry.aArgs[v61+v45].value);
+        }
+#else
+        int32_t testAmt = 0;
+        /*for (int32_t v45 = 0; v45 < v34; v45++)
+        {
+            if (v61+(v45*4)+3 >= stdConffile_g_entry.numArgs) break; // Added
+
+            flex_t test1 = _atof(stdConffile_g_entry.aArgs[v61+(v45*4)+0].value);
+            flex_t test2 = _atof(stdConffile_g_entry.aArgs[v61+(v45*4)+1].value);
+            flex_t test3 = _atof(stdConffile_g_entry.aArgs[v61+(v45*4)+2].value);
+            flex_t test4 = _atof(stdConffile_g_entry.aArgs[v61+(v45*4)+3].value);
+
+            if (test1 != test2 || (test1 != test3)) break;
+
+            testAmt += 1;
+        }*/
+        testAmt = stdConffile_g_entry.numArgs - v61;
+
+#ifndef SITHSURFACE_POOLED_ARRAYS
+        // Added: pooled mode grabs+zeroes this storage up front (pIntens)
+        surfaceInfo->intensities = (flex_t*)SITH_ALLOC(sizeof(flex_t) * ((v34 * 4) + 1)); // Added: extra
+        if ( !surfaceInfo->intensities )
+            return 0;
+        memset(surfaceInfo->intensities, 0, sizeof(flex_t) * ((v34 * 4) + 1)); // Added
+        pIntens = surfaceInfo->intensities;
+#endif
+        if (testAmt < v34 * 4) {
+            for (int32_t v45 = 0; v45 < v34; v45++)
+            {
+                flex_t val = _atof(stdConffile_g_entry.aArgs[v61+v45].value);
+                pIntens[(v34*0)+v45] = val; // Added
+                pIntens[(v34*1)+v45] = val; // Added
+                pIntens[(v34*2)+v45] = val; // Added 
+                pIntens[(v34*3)+v45] = val; // Added
+            }
+            surfaceIter->flags &= ~SITH_SURFACE_1000000;
+        }
+        else {
+            surfaceIter->flags |= SITH_SURFACE_1000000;
+            for (int32_t v45 = 0; v45 < v34; v45++)
+            {
+                pIntens[(v34*0)+v45] = _atof(stdConffile_g_entry.aArgs[v61+(v45*4)+0].value);
+                pIntens[(v34*1)+v45] = _atof(stdConffile_g_entry.aArgs[v61+(v45*4)+1].value);
+                pIntens[(v34*2)+v45] = _atof(stdConffile_g_entry.aArgs[v61+(v45*4)+2].value);
+                pIntens[(v34*3)+v45] = _atof(stdConffile_g_entry.aArgs[v61+(v45*4)+3].value);
+            }
+        }
+#endif
+
+        face->numVertices = v34;
+        face->num = v67;
+
+#ifdef SITHRENDER_SPHERE_TEST_SURFACES
+        rdVector3 surfaceCenterPt = {0};
+        for (int idx = 0; idx < surfaceIter->surfaceInfo.face.numVertices; idx++) {
+            int fullIdx = pPosIdx[idx]; // Added: pool-safe (field may hold an offset here)
+            rdVector3* pIter = &sithWorld_g_pLastLoadedWorld->aVertices[fullIdx];
+            rdVector_Add3Acc(&surfaceCenterPt, pIter);
+            //rdVector_Scale3Acc(&surfaceCenterPt, 0.5);
+        }
+        rdVector_Scale3Acc(&surfaceCenterPt, 1.0 / surfaceIter->surfaceInfo.face.numVertices);
+        
+        flex_t radius = 0.0;
+        for (int idx = 0; idx < surfaceIter->surfaceInfo.face.numVertices; idx++) {
+            int fullIdx = pPosIdx[idx]; // Added: pool-safe
+            rdVector3* pIter = &sithWorld_g_pLastLoadedWorld->aVertices[fullIdx];
+            radius = stdMath_Max(rdVector_Dist3(&surfaceCenterPt, pIter), radius);
+        }
+        surfaceIter->radius = radius;
+        surfaceIter->center = surfaceCenterPt;
+#endif
+
+        rdMaterial_OptionalFree(face->material);
+    }
+
+#if defined(SITHSURFACE_POOLED_ARRAYS) && !defined(TARGET_GAMECUBE)
+    // Added: trim the pool and resolve the offset-encoded fields to pointers.
+    if (pIdxPool && poolUsed && poolUsed < poolCap) {
+        int* pTrim = (int*)SITH_REALLOC(pIdxPool, sizeof(int) * poolUsed);
+        if (pTrim)
+            pIdxPool = pTrim;
+    }
+#ifdef TARGET_TWL
+    // Added: relocate the finished pool into extram (TWL realloc cannot migrate
+    // heaps, so growth happened in sysram; one word-safe move, then the fixup
+    // below resolves offsets against the final address). Not on DC: these
+    // arrays are read per visible surface per frame and DC VRAM is uncached.
+    if (pIdxPool && poolUsed) {
+        int prevSuggest = pSithHS->suggestHeap(HEAP_WORD_ADDRESSABLE);
+        int* pMoved = (int*)SITH_ALLOC(sizeof(int) * poolUsed);
+        pSithHS->suggestHeap(prevSuggest);
+        if (pMoved) {
+            stdPlatform_Memcpy32(pMoved, pIdxPool, sizeof(int) * poolUsed);
+            SITH_FREE(pIdxPool);
+            pIdxPool = pMoved;
+        }
+    }
+#endif
+    pWorld->paSurfaceIdxPool = pIdxPool;
+    for (int32_t vFix = 0; vFix < numSurfaces; vFix++)
+    {
+        rdFace* pFixFace = &surfaces[vFix].surfaceInfo.face;
+        pFixFace->vertexPosIdx = pIdxPool + ((intptr_t)pFixFace->vertexPosIdx - 1);
+        if (pFixFace->vertexUVIdx)
+            pFixFace->vertexUVIdx = pIdxPool + ((intptr_t)pFixFace->vertexUVIdx - 1);
+        surfaces[vFix].surfaceInfo.intensities = (flex_t*)(pIdxPool + ((intptr_t)surfaces[vFix].surfaceInfo.intensities - 1));
+    }
+#endif
+
+    for (int32_t v50 = 0; v50 < numSurfaces; v50++)
+    {
+        if (!stdConffile_ReadLine())
+            return 0;
+        
+        int32_t idx_unused;
+        flex32_t norm_x, norm_y, norm_z;
+        if (_sscanf(stdConffile_g_aLine, "%d: %f %f %f", &idx_unused, &norm_x, &norm_y, &norm_z) != 4)
+            return 0;
+        
+        //jk_printf("%u: %x\n", v50, &world->surfaces[0].flags);
+        
+        pWorld->surfaces[v50].surfaceInfo.face.normal.x = norm_x;
+        pWorld->surfaces[v50].surfaceInfo.face.normal.y = norm_y;
+        pWorld->surfaces[v50].surfaceInfo.face.normal.z = norm_z;
+    }
+    
+    pWorld->numSurfaces = numSurfaces;
+#ifdef RDMATERIAL_LRU_LOAD_UNLOAD
+    for (uint32_t i = 0; i < sithMaterial_numMaterials; i++) {
+        rdMaterial_OptionalFree(sithMaterial_aMaterials[i]);
+    }
+#endif
+    SITH_FREE(sithMaterial_aMaterials);
+    sithMaterial_aMaterials = NULL; // Added
+    sithMaterial_numMaterials = 0;
+    return 1;
+}
+
+int sithSurface_ValidateWorldSurfaces(SithWorld *pWorld)
+{
+    SITH_ASSERTREL(pWorld != NULL); // Added: ported from OpenJones3D
+    for (int32_t i = 0; i < pWorld->numSurfaces; i++)
+    {
+        if (pWorld->surfaces[i].pSector == (SithSector*)8 || !pWorld->surfaces[i].pSector)
+            return 0;
+    }
+    
+    return 1;
+}
+
+int sithSurface_ValidateSurfacePointer(SithSurface *pSurf)
+{
+    if ( pSurf )
+        return (pSurf->pSector != 0);
+
+    return 0;
+}
+
+void sithSurface_HideSectorAdjoin(SithSurfaceAdjoin *pAdjoin)
+{
+    SITH_ASSERTREL(pAdjoin); // Added: ported from OpenJones3D
+    if ( (pAdjoin->flags & 1) != 0 )
+    {
+        pAdjoin->flags &= ~0x1;
+        pAdjoin->flags |= 0x20;
+    }
+}
+
+void sithSurface_ShowSectorAdjoin(SithSurfaceAdjoin *pAdjoin)
+{
+    SITH_ASSERTREL(pAdjoin); // Added: ported from OpenJones3D
+    if ( (pAdjoin->flags & 0x20) != 0 )
+    {
+        pAdjoin->flags &= ~0x20;
+        pAdjoin->flags |= 0x1;
+    }
+}
+
+void sithSurface_SetSectorLight(SithSector *sector, flex_t extraLight, flex_t a3, int a4)
+{
+    flex_d_t v5; // st7
+    rdSurface *v6; // eax
+    int32_t v7; // edx
+    rdSurface *v8; // esi
+    flex_d_t v9; // st7
+    flex_t a1a; // [esp+4h] [ebp+4h]
+
+    v5 = extraLight - sector->extraLight;
+    if ( v5 != 0.0 )
+    {
+        //v6 = (rdSurface *)sithSurface_numAvail;
+        // Added: fix undef behavior?
+        v6 = NULL;
+        if ( sithSurface_numAvail )
+        {
+            v7 = sithSurface_aAvail[sithSurface_numAvail--];
+            if ( v7 > sithSurface_numSurfaces )
+                sithSurface_numSurfaces = v7;
+            v8 = &sithSurface_aSurfaces[v7];
+            _memset(v8, 0, sizeof(rdSurface));
+            v6 = v8;
+            v8->index = ((playerThingIdx + 1) << 16) | (uint16_t)v7;
+        }
+        if ( v6 )
+        {
+            v6->sector = sector;
+            v6->flags = a4 & 1 | 0x2400000;
+            a1a = v5;
+            v6->field_44 = a1a / a3;
+            v9 = sector->extraLight;
+            v6->field_3C = sector->extraLight;
+            v6->field_48 = v9;
+            v6->field_40 = extraLight;
+        }
+    }
+}
+
+rdSurface* sithSurface_SurfaceAnim(SithSurface *parent, flex_t a2, uint16_t flags)
+{
+    rdMaterial *material; // ebp
+    rdSurface *result; // eax
+    int32_t v5; // ebx
+    rdSurface *rd_surf; // esi
+    int32_t v7; // edx
+    int64_t v8; // rax
+    int32_t v9; // edx
+    int32_t v10; // eax
+    int32_t v11; // eax
+    int32_t v13; // ecx
+
+    material = parent->surfaceInfo.face.material;
+    if ( !material )
+        return 0;
+    v5 = sithSurface_numAvail;
+    if ( sithSurface_numAvail )
+    {
+        v7 = sithSurface_aAvail[sithSurface_numAvail];
+        v5 = --sithSurface_numAvail;
+        if ( v7 > sithSurface_numSurfaces )
+            sithSurface_numSurfaces = v7;
+        rd_surf = &sithSurface_aSurfaces[v7];
+        _memset(rd_surf, 0, sizeof(rdSurface));
+        rd_surf->index = ((playerThingIdx + 1) << 16) | (uint16_t)v7;
+    }
+    else
+    {
+        rd_surf = 0;
+    }
+    if ( !rd_surf )
+        return 0;
+    if ( (flags & 4) != 0 )
+        rd_surf->wallCel = 2;
+    else
+        rd_surf->wallCel = (flags & 2) != 0;
+    rd_surf->flags = flags | 0x220000;
+    rd_surf->sithSurfaceParent = parent;
+    rd_surf->material = material;
+    v8 = (int64_t)(1000.0 / a2);
+    rd_surf->field_34 = v8;
+    if (v8)
+    {
+        v13 = v8 + sithTime_g_msecGameTime;
+        result = rd_surf;
+        rd_surf->field_30 = v13;
+    }
+    else
+    {
+        rd_surf->flags = 0;
+        v9 = rd_surf - sithSurface_aSurfaces;
+        v10 = sithSurface_numSurfaces;
+        sithSurface_aAvail[v5 + 1] = v9;
+        sithSurface_numAvail = v5 + 1;
+        if ( v9 == v10 )
+        {
+            for (v11 = v9-1; v11 >= 0; v11--)
+            {
+                if (sithSurface_aSurfaces[v11].flags)
+                    break;
+            }
+            sithSurface_numSurfaces = v11;
+        }
+        result = 0;
+    }
+    return result;
+}
+
+int sithSurface_AllocWorldSurfaces(SithWorld *pWorld, int numSurfaces)
+{
+    SITH_ASSERTREL(pWorld != NULL); // Added: ported from OpenJones3D
+    SithSurface *surfaces = (SithSurface *)SITH_ALLOC(numSurfaces * sizeof(SithSurface));
+    pWorld->surfaces = surfaces;
+    if ( !surfaces )
+        return 0;
+    _memset(surfaces, 0, numSurfaces * sizeof(SithSurface));
+    pWorld->numSurfaces = numSurfaces;
+    for (uint32_t i = 0; i < (uint32_t)numSurfaces; i++)
+    {
+        rdFace_NewEntry(&surfaces[i].surfaceInfo.face);
+        surfaces[i].index = i;
+    }
+    return 1;
+}
+
+int sithSurface_AllocWorldAdjoins(SithWorld *pWorld, int numAdjoins)
+{
+    SITH_ASSERTREL(pWorld); // Added: ported from OpenJones3D
+    if ( numAdjoins == 0 )
+    {
+        pWorld->adjoins = NULL;
+        return 1;
+    }
+    SithSurfaceAdjoin *adjoins;
+    { TWL_EXTRAM_SUGGEST(pSithHS); // Added
+    adjoins = (SithSurfaceAdjoin *)SITH_ALLOC(numAdjoins * sizeof(SithSurfaceAdjoin));
+    TWL_EXTRAM_RESTORE(pSithHS); }
+    pWorld->adjoins = adjoins;
+    if ( !adjoins )
+        return 0;
+    stdPlatform_Memzero32(adjoins, numAdjoins * sizeof(SithSurfaceAdjoin)); // Added: word-safe
+    pWorld->numAdjoins = numAdjoins;
+    pWorld->numAdjoinsLoaded = 0;
+    return 1;
+}
+
+void sithSurface_FreeWorldSurfaces(SithWorld *pWorld)
+{
+    SITH_ASSERTREL(pWorld != NULL); // Added: ported from OpenJones3D
+#ifdef SITHSURFACE_POOLED_ARRAYS
+    // Added: pooled surface arrays free as one block (per-surface pointers alias
+    // into it; a partially-parsed world may still hold offsets instead).
+    if (pWorld->paSurfaceIdxPool)
+    {
+#ifdef TARGET_GAMECUBE
+        // A chain of blocks (see sithSurface_Load).
+        for (int* pBlk = pWorld->paSurfaceIdxPool; pBlk; ) {
+            int* pNext = ((int**)pBlk)[0];
+            SITH_FREE(pBlk);
+            pBlk = pNext;
+        }
+#else
+        SITH_FREE(pWorld->paSurfaceIdxPool);
+#endif
+        pWorld->paSurfaceIdxPool = NULL;
+        for (int32_t i = 0; i < pWorld->numSurfaces; i++)
+        {
+            SithSurface* surface = &pWorld->surfaces[i];
+            surface->surfaceInfo.face.numVertices = 0;
+            surface->surfaceInfo.face.vertexPosIdx = NULL;
+            surface->surfaceInfo.face.vertexUVIdx = NULL;
+            surface->surfaceInfo.intensities = NULL;
+            surface->surfaceInfo.lastTouchedMs = 0;
+        }
+    }
+    else
+#endif
+    for (int32_t i = 0; i < pWorld->numSurfaces; i++)
+    {
+        SithSurface* surface = &pWorld->surfaces[i];
+
+        surface->surfaceInfo.face.numVertices = 0;
+        if ( surface->surfaceInfo.face.vertexPosIdx )
+            SITH_FREE(surface->surfaceInfo.face.vertexPosIdx);
+        if ( surface->surfaceInfo.face.vertexUVIdx )
+            SITH_FREE(surface->surfaceInfo.face.vertexUVIdx);
+        if ( surface->surfaceInfo.intensities )
+            SITH_FREE(surface->surfaceInfo.intensities);
+        surface->surfaceInfo.lastTouchedMs = 0;
+    }
+
+    SITH_FREE(pWorld->surfaces);
+    pWorld->surfaces = 0;
+    pWorld->numSurfaces = 0;
+    sithSurface_numUnsyncedSurfaces = 0;
+    if ( pWorld->adjoins )
+    {
+        SITH_FREE(pWorld->adjoins);
+        pWorld->adjoins = 0;
+        pWorld->numAdjoins = 0;
+        pWorld->numAdjoinsLoaded = 0;
+    }
+}
+
+void sithSurface_Tick(flex_t deltaSecs)
+{
+    int32_t v2; // ebx
+    int32_t flags; // ecx
+    int32_t v7; // edx
+    int32_t v8; // eax
+    rdSurface *v9; // ecx
+    SithSurface *v10; // edi
+    uint32_t v13; // eax
+    uint32_t v14; // edi
+    int32_t v15; // ebx
+    uint32_t v16; // ecx
+    uint32_t v17; // ecx
+    int32_t v19; // edi
+    uint32_t v20; // eax
+    int32_t v22; // eax
+    int32_t v24; // ecx
+    int32_t v25; // edx
+    int32_t v27; // eax
+    rdSurface *v28; // ecx
+    int32_t v29; // edx
+    flex_d_t v31; // st7
+    int32_t v33; // ecx
+    SithSurface* v34; // eax
+    SithThing* v35; // eax
+    flex_d_t v37; // st7
+
+    v2 = 0;
+    for (v2 = 0; v2 <= sithSurface_numSurfaces; v2++)
+    {
+        rdSurface* surface = &sithSurface_aSurfaces[v2];
+        flags = surface->flags;
+        if (!flags)
+            continue;
+
+        SithThing* parent_thing = surface->parent_thing;
+        if ( !parent_thing || parent_thing->type && parent_thing->signature == surface->signature )
+        {
+            if ( (flags & SITH_SURFACE_VERYDEEPWATER) != 0 )
+            {
+                if ( (flags & SITH_SURFACE_WATER) != 0 )
+                {
+                    v10 = surface->sithSurfaceParent;
+                    if ( v10 )
+                    {
+                        flex_t scroll_x = surface->scrollVector.x * deltaSecs;
+                        flex_t scroll_y = surface->scrollVector.y * deltaSecs;
+                        //printf("%x: %f %f %x\n", surface->index, scroll_x, scroll_y, surface->flags);
+
+                        v10->surfaceInfo.face.texVertOffset.x += scroll_x;
+                        v10->surfaceInfo.face.texVertOffset.y += scroll_y;
+
+                        if ( ((v2 + jkPlayer_currentTickIdx) & 0xF) == 0 )
+                        {
+                            v10->surfaceInfo.face.texVertOffset.x = stdMath_Fmod(v10->surfaceInfo.face.texVertOffset.x, 1024.0);
+                            v10->surfaceInfo.face.texVertOffset.y = stdMath_Fmod(v10->surfaceInfo.face.texVertOffset.y, 1024.0);
+                        }
+                    }
+                }
+                else if ( (flags & SITH_SURFACE_800000) != 0 )
+                {
+                    sithSurface_ScrollSky(surface, SITH_SURFACE_HORIZONSKY, deltaSecs, v2);
+                }
+                else if ( (flags & SITH_SURFACE_1000000) != 0 )
+                {
+                    sithSurface_ScrollSky(surface, SITH_SURFACE_CEILINGSKY, deltaSecs, v2);
+                }
+            }
+            else if ( (flags & SITH_SURFACE_200000) != 0 && (v13 = surface->field_30, v13 <= sithTime_g_msecGameTime) )
+            {
+                v14 = surface->field_34;
+                v15 = 0;
+                v16 = sithTime_g_msecGameTime - v13;
+                if ( v14 && surface->material )
+                {
+                    surface->wallCel += v16 / v14 + 1;
+                    surface->field_30 = surface->field_34 + sithTime_g_msecGameTime - v16 % surface->field_34;
+                    v17 = surface->material->num_texinfo;
+                    if ( surface->wallCel >= v17 )
+                    {
+                        if ( (flags & 1) != 0 )
+                        {
+                            v19 = 0;
+                            if ( (flags & 2) != 0 )
+                            {
+                                v19 = 1;
+                            }
+                            else if ( (flags & 4) != 0 )
+                            {
+                                v19 = 2;
+                            }
+                            // Fixed: guard modulo-by-zero. When num_texinfo (v17) equals
+                            // v19 the divisor (v17 - v19) is 0; the SH4 libgcc division
+                            // helper then indexes its reciprocal table out of bounds and
+                            // reads a wild address, faulting on real hardware (Flycast and
+                            // x86 tolerate the stray read). A degenerate cel range just
+                            // resolves to the base frame v19.
+                            if ( v17 > (uint32_t)v19 )
+                                v20 = (surface->wallCel - v19) % (v17 - v19) + v19;
+                            else
+                                v20 = v19;
+                            surface->wallCel = v20;
+                            rdMaterial* v21 = surface->material;
+                            if ( v20 > v21->num_texinfo - 1 )
+                                v20 = v21->num_texinfo - 1;
+                            surface->wallCel = v20;
+                        }
+                        else
+                        {
+                            if ( (flags & 8) != 0 )
+                                surface->wallCel = 0;
+                            else
+                                surface->wallCel = v17 - 1;
+                            v15 = 1;
+                        }
+                    }
+                    v22 = surface->flags;
+                    if ( (v22 & 0x80000) != 0 )
+                    {
+                        surface->parent_thing->renderData.wallCel = surface->wallCel;
+                    }
+                    else if ( (v22 & 0x20000) != 0 )
+                    {
+                        SithSurface* v23 = surface->sithSurfaceParent;
+                        v23->surfaceInfo.face.wallCel = surface->wallCel;
+                        v23->flags |= SITH_SURFACE_CHANGED;
+                    }
+                    else if ( (v22 & 0x10000) != 0 )
+                    {
+                        surface->material->curCelNum = surface->wallCel;
+                    }
+                    if ( v15 )
+                    {
+                        // TODO inlined?
+                        surface->flags = 0;
+                        v25 = ((intptr_t)surface - (intptr_t)sithSurface_aSurfaces) / sizeof(rdSurface);
+                        sithSurface_aAvail[++sithSurface_numAvail] = v25;
+                        if ( v25 == sithSurface_numSurfaces )
+                        {
+                            for (v27 = v25 - 1; v27 >= 0; v27--)
+                            {
+                                v28 = &sithSurface_aSurfaces[v27];
+                                if ( v28->flags )
+                                    break;
+                            }
+                            sithSurface_numSurfaces = v27;
+                        }
+                    }
+                }
+            }
+            else if ( (flags & 0x400000) != 0 )
+            {
+                v29 = 0;
+                v31 = surface->field_44 * deltaSecs + surface->field_3C;
+                if ( surface->field_44 < 0.0 && v31 < surface->field_40 || surface->field_44 > 0.0 && v31 > surface->field_40 ) // TODO verify `surface->field_44 < 0.0`
+                {
+                    v31 = surface->field_40;
+                    v29 = 1;
+                }
+                surface->field_3C = v31;
+                v33 = surface->flags;
+                if ( (v33 & 0x20000) != 0 && (v34 = surface->sithSurfaceParent) != 0 )
+                {
+                    v34->surfaceInfo.face.extraLight = v31;
+                }
+                else if ( (v33 & 0x40000) != 0 && (v35 = surface->parent_thing) != 0 )
+                {
+                    v35->light = v31;
+                }
+                else if ( (v33 & 0x2000000) != 0 )
+                {
+                    if ( surface->sector )
+                        surface->sector->extraLight = v31;
+                }
+                if ( v29 )
+                {
+                    if ( (v33 & 1) != 0 )
+                    {
+                        surface->field_44 = -surface->field_44;
+                        v37 = surface->field_40;
+                        surface->field_40 = surface->field_48;
+                        surface->field_48 = v37;
+                    }
+                    else
+                    {
+                        sithSurface_StopAnim(surface);
+                    }
+                }
+            }
+        }
+        else
+        {
+            // TODO inlined?
+            surface->flags = 0;
+            v7 = ((intptr_t)surface - (intptr_t)sithSurface_aSurfaces) / sizeof(rdSurface);
+            sithSurface_aAvail[++sithSurface_numAvail] = v7;
+            if ( v7 == sithSurface_numSurfaces )
+            {
+                for (v8 = v7 - 1; v8 >= 0; v8--)
+                {
+                    v9 = &sithSurface_aSurfaces[v8];
+                    if ( v9->flags )
+                        break;
+                }
+                sithSurface_numSurfaces = v8;
+            }
+        }
+    }
+}
+
+void sithSurface_ScrollSky(rdSurface *surface, int skyType, flex_t deltaSecs, uint8_t a4)
+{
+    flex_t scroll_x = surface->scrollVector.x * deltaSecs;
+    flex_t scroll_y = surface->scrollVector.y * deltaSecs;
+
+    if ( skyType == SITH_SURFACE_HORIZONSKY )
+    {
+        flex_t offs_x = scroll_x + sithWorld_g_pCurrentWorld->horizonSkyOffset.x;
+        flex_t offs_y = scroll_y + sithWorld_g_pCurrentWorld->horizonSkyOffset.y;
+
+        sithWorld_g_pCurrentWorld->horizonSkyOffset.x = offs_x;
+        sithWorld_g_pCurrentWorld->horizonSkyOffset.y = offs_y;
+
+        if ( ((jkPlayer_currentTickIdx + a4) & 0xF) == 0 )
+        {
+            sithWorld_g_pCurrentWorld->horizonSkyOffset.x = stdMath_Fmod(offs_x, 1024.0);
+            sithWorld_g_pCurrentWorld->horizonSkyOffset.y = stdMath_Fmod(offs_y, 1024.0);
+        }
+    }
+    else
+    {
+        flex_t offs_x = scroll_x + sithWorld_g_pCurrentWorld->ceilingSkyOffset.x;
+        flex_t offs_y = scroll_y + sithWorld_g_pCurrentWorld->ceilingSkyOffset.y;
+
+        sithWorld_g_pCurrentWorld->ceilingSkyOffset.x = offs_x;
+        sithWorld_g_pCurrentWorld->ceilingSkyOffset.y = offs_y;
+
+        if ( ((jkPlayer_currentTickIdx + a4) & 0xF) == 0 )
+        {
+            sithWorld_g_pCurrentWorld->ceilingSkyOffset.x = stdMath_Fmod(offs_x, 1024.0);
+            sithWorld_g_pCurrentWorld->ceilingSkyOffset.y = stdMath_Fmod(offs_y, 1024.0);
+        }
+    }
+}
+
+int sithSurface_StopAnim(rdSurface *surface)
+{
+    SithSurface *v2; // eax
+    int32_t v4; // eax
+    int32_t v5; // edx
+    int32_t v6; // eax
+
+    if ( (surface->flags & SITH_SURFACE_WATER) != 0 && (surface->flags & SITH_SURFACE_VERYDEEPWATER) != 0 )
+    {
+        v2 = surface->sithSurfaceParent;
+        v2->flags &= ~SITH_SURFACE_SCROLLING;
+        rdVector_Zero3(&surface->field_24);
+        rdVector_Zero2(&surface->scrollVector);
+    }
+    surface->flags = 0;
+    v4 = sithSurface_numAvail;
+    v5 = surface - sithSurface_aSurfaces;
+    sithSurface_aAvail[sithSurface_numAvail + 1] = v5;
+    sithSurface_numAvail = v4 + 1;
+    if ( v5 == sithSurface_numSurfaces )
+    {
+        for (v6 = v5 - 1; v6 >= 0; v6--)
+        {
+            if (sithSurface_aSurfaces[v6].flags)
+                break;
+        }
+        sithSurface_numSurfaces = v6;
+    }
+    return 1;
+}
+
+uint32_t sithSurface_GetSurfaceAnim(SithSurface *surface)
+{
+    int32_t v1; // ecx
+    rdSurface *i; // eax
+    rdSurface* v3; // eax
+
+    v1 = 0;
+    for ( i = sithSurface_aSurfaces; v1 <= sithSurface_numSurfaces; ++i )
+    {
+        if ( (i->flags & SITH_SURFACE_WATER) != 0 && i->sithSurfaceParent == surface )
+            break;
+        ++v1;
+    }
+    v3 = v1 > sithSurface_numSurfaces ? 0 : i;
+    if ( !v3 )
+        return -1;
+
+    // div 19 div 4?
+    return ((intptr_t)v3 - (intptr_t)sithSurface_aSurfaces) / sizeof(rdSurface);
+}
+
+rdSurface* sithSurface_SurfaceLightAnim(SithSurface *surface, flex_t a2, flex_t a3)
+{
+    flex_d_t v3; // st7
+    rdSurface *result; // eax
+    int32_t v5; // edx
+    rdSurface *v6; // esi
+    flex_t v7; // edx
+    flex_t surfacea; // [esp+4h] [ebp+4h]
+
+    v3 = a2 - surface->surfaceInfo.face.extraLight;
+    if ( v3 == 0.0 )
+        return 0;
+    //result = (rdSurface *)sithSurface_numAvail;
+    // Added: fix undef behavior?
+    result = NULL;
+    if ( sithSurface_numAvail )
+    {
+        v5 = sithSurface_aAvail[sithSurface_numAvail--];
+        if ( v5 > sithSurface_numSurfaces )
+            sithSurface_numSurfaces = v5;
+        v6 = &sithSurface_aSurfaces[v5];
+        _memset(v6, 0, sizeof(rdSurface));
+        result = v6;
+        v6->index = ((playerThingIdx + 1) << 16) | (uint16_t)v5;
+    }
+    if ( result )
+    {
+        v7 = surface->surfaceInfo.face.extraLight;
+        result->sithSurfaceParent = surface;
+        result->flags = SITH_SURFACE_400000|SITH_SURFACE_WATER;
+        surfacea = v3;
+        result->field_44 = surfacea / a3;
+        result->field_3C = v7;
+        result->field_40 = a2;
+    }
+    return result;
+}
+
+rdSurface* sithSurface_SlideWall(SithSurface *surface, rdVector3 *a2)
+{
+    rdMaterial *v2; // eax
+    rdSurface *v3; // eax
+    int32_t v4; // edx
+    rdSurface *v5; // ebx
+    SithWorld *v6; // edi
+    int32_t v7; // ebp
+    flex_t v8; // edx
+    int *v9; // eax
+    rdVector3 *v10; // ecx
+    rdVector2 *v11; // eax
+    int *v12; // ecx
+    int32_t v13; // edx
+    int32_t v14; // ecx
+    flex_t v15; // eax
+    int32_t v16; // ecx
+    rdVector2 *v17; // edx
+    flex_d_t v18; // st7
+//    char v20; // c3
+//    char v22; // c0
+    rdSurface *result; // eax
+    flex_t v25; // [esp+10h] [ebp-BCh]
+    flex_t v26; // [esp+10h] [ebp-BCh]
+    flex_t v27; // [esp+10h] [ebp-BCh]
+    flex_t v28; // [esp+14h] [ebp-B8h]
+    flex_t v29; // [esp+14h] [ebp-B8h]
+    rdVector3 v30; // [esp+18h] [ebp-B4h]
+    rdVector3 v31; // [esp+24h] [ebp-A8h]
+    rdSurface *v32; // [esp+30h] [ebp-9Ch]
+    rdMatrix34 in; // [esp+34h] [ebp-98h] BYREF
+    int32_t v34; // [esp+64h] [ebp-68h]
+    rdVector2 v35; // [esp+68h] [ebp-64h]
+    rdVector3 a1; // [esp+70h] [ebp-5Ch] BYREF
+    rdVector3 a1a; // [esp+7Ch] [ebp-50h] BYREF
+    rdVector3 rot; // [esp+90h] [ebp-3Ch] BYREF
+    rdMatrix34 a3; // [esp+9Ch] [ebp-30h] BYREF
+
+    v2 = surface->surfaceInfo.face.material;
+    if ( !v2 || (v2->tex_type & 2) == 0 )
+        return 0;
+    v3 = NULL;
+    if ( sithSurface_numAvail )
+    {
+        v4 = sithSurface_aAvail[sithSurface_numAvail--];
+        if ( v4 > sithSurface_numSurfaces )
+            sithSurface_numSurfaces = v4;
+        v5 = &sithSurface_aSurfaces[v4];
+        _memset(v5, 0, sizeof(rdSurface));
+        v3 = v5;
+        v5->index = ((playerThingIdx + 1) << 16) | (uint16_t)v4;
+    }
+    v32 = v3;
+    if ( !v3 )
+        return 0;
+    v3->flags = SITH_SURFACE_VERYDEEPWATER|SITH_SURFACE_WATER;
+    v3->sithSurfaceParent = surface;
+    v6 = sithWorld_g_pCurrentWorld;
+    v3->field_24 = *a2;
+    v7 = 1;
+    v8 = surface->surfaceInfo.face.normal.x;
+    v34 = surface->flags;
+    in.uvec.x = v8;
+    in.uvec.y = surface->surfaceInfo.face.normal.y;
+    v9 = surface->surfaceInfo.face.vertexPosIdx;
+    in.uvec.z = surface->surfaceInfo.face.normal.z;
+    v10 = v6->aVertices;
+    v31 = v10[*v9];
+    v30 = v10[v9[1]];
+    v11 = v6->aTexVerticies;
+    v12 = surface->surfaceInfo.face.vertexUVIdx;
+    v13 = *v12;
+    v14 = v12[1];
+    v35 = v11[v13];
+    v25 = v11[v14].x;
+    v15 = v11[v14].y;
+    a1.x = v31.x - v30.x;
+    v28 = v15;
+    a1.y = v31.y - v30.y;
+
+    // Added: fixed point hanged here
+    int fallback = 0;
+    for ( a1.z = v31.z - v30.z; rdVector_Len3(&a1) < 0.0001; v28 = v17[v16].y )
+    {
+        if ( ++v7 == surface->surfaceInfo.face.numVertices )
+            v7 = 0;
+        v30 = v6->aVertices[surface->surfaceInfo.face.vertexPosIdx[v7]];
+        v16 = surface->surfaceInfo.face.vertexUVIdx[v7];
+        v17 = v6->aTexVerticies;
+        v25 = v17[v16].x;
+
+        // Added: fixed point hanged here
+        fallback++;
+        if (fallback > 100) {
+            break;
+        }
+    }
+    rdVector_Sub3Acc(&v30, &v31);
+    v26 = v25 - v35.x;
+    in.rvec = v30;
+    v29 = v28 - v35.y;
+    rdVector_Normalize3Acc(&in.uvec);
+    rdVector_Normalize3Acc(&in.rvec);
+    in.scale = v31;
+    in.lvec.x = in.uvec.y * in.rvec.z - in.uvec.z * in.rvec.y;
+    in.lvec.y = in.uvec.z * in.rvec.x - in.uvec.x * in.rvec.z;
+    in.lvec.z = in.uvec.x * in.rvec.y - in.uvec.y * in.rvec.x;
+    rdMatrix_InvertOrtho34(&a3, &in);
+    if ( v26 == 0.0 && v29 == 0.0 )
+    {
+        v18 = 0.0;
+    }
+    else if ( v26 == 0.0 )
+    {
+        if ( v29 <= 0.0 )
+            v18 = -90.0;
+        else
+            v18 = 90.0;
+    }
+    else if ( v29 == 0.0 )
+    {
+        if ( v26 <= 0.0 )
+            v18 = 180.0;
+        else
+            v18 = 0.0;
+    }
+    else
+    {
+        v18 = atan2((float)v29 / (float)v26, 1.0) * (180.0 / M_PI);
+        if ( v26 < 0.0 && v29 > 0.0 )
+            v18 = v18 - -180.0;
+        if ( v26 < 0.0 && v29 < 0.0 )
+            v18 = v18 - 180.0;
+    }
+    v27 = 320.0;
+    if ( (v34 & SITH_SURFACE_HALF_TEXTURE_SCALE) != 0 )
+    {
+        v27 = 160.0;
+    }
+    else if ( (v34 & SITH_SURFACE_DOUBLE_TEXTURE_SCALE) != 0 )
+    {
+        v27 = 640.0;
+    }
+    else if ( (v34 & SITH_SURFACE_EIGHT_TEXTURE_SCALE) != 0 )
+    {
+        v27 = 40.0;
+    }
+    rot.y = v18;
+    rot.x = 0.0;
+    rot.z = 0.0;
+    rdMatrix_PostRotate34(&a3, &rot);
+    
+    rdVector3 a1a_2;
+    a1a_2.x = v27;
+    a1a_2.y = v27;
+    a1a_2.z = 1.0;
+    rdMatrix_PostScale34(&a3, &a1a_2);
+    rdMatrix_TransformVector34(&a1a, a2, &a3);
+    result = v32;
+    v32->scrollVector.x = -a1a.x;
+    v32->scrollVector.y = -a1a.y;
+    surface->flags |= SITH_SURFACE_SCROLLING;
+    return result;
+}
+
+rdSurface* sithSurface_MaterialAnim(rdMaterial *material, flex_t a2, int a3)
+{
+    int32_t v3; // ebx
+    rdSurface *v4; // esi
+    int32_t v5; // edx
+    rdSurface *result; // eax
+    int64_t v7; // rax
+    int32_t v8; // edx
+    int32_t v9; // eax
+    int32_t v10; // eax
+    int32_t v12; // ecx
+
+    v3 = sithSurface_numAvail;
+    if ( sithSurface_numAvail )
+    {
+        v5 = sithSurface_aAvail[sithSurface_numAvail];
+        v3 = --sithSurface_numAvail;
+        if ( v5 > sithSurface_numSurfaces )
+            sithSurface_numSurfaces = v5;
+        v4 = &sithSurface_aSurfaces[v5];
+        _memset(v4, 0, sizeof(rdSurface));
+        v4->index = ((playerThingIdx + 1) << 16) | (uint16_t)v5;
+    }
+    else
+    {
+        v4 = 0;
+    }
+    if ( !v4 )
+        return 0;
+    if ( (a3 & 4) != 0 )
+        v4->wallCel = 2;
+    else
+        v4->wallCel = (a3 & 2) != 0;
+    v4->material = material;
+    v4->flags = (uint16_t)a3 | SITH_SURFACE_200000|SITH_SURFACE_METAL;
+    v7 = (int64_t)(1000.0 / a2);
+    v4->field_34 = v7;
+    if (v7)
+    {
+        v12 = v7 + sithTime_g_msecGameTime;
+        result = v4;
+        v4->field_30 = v12;
+    }
+    else
+    {
+        v4->flags = 0;
+        v8 = v4 - sithSurface_aSurfaces;
+        v9 = sithSurface_numSurfaces;
+        sithSurface_aAvail[v3 + 1] = v8;
+        sithSurface_numAvail = v3 + 1;
+        if ( v8 == v9 )
+        {
+            v10 = v8 - 1;
+            if ( v8 - 1 >= 0 )
+            {
+                do
+                {
+                    if ( sithSurface_aSurfaces[v10].flags )
+                        break;
+                    --v10;
+                }
+                while ( v10 >= 0 );
+            }
+            sithSurface_numSurfaces = v10;
+        }
+        result = 0;
+    }
+    return result;
+}
+
+void sithSurface_DetachThing(SithSurface *a1, rdVector3 *out)
+{
+    int32_t v2; // ecx
+    rdSurface *i; // eax
+    rdSurface *v4; // eax
+
+    v2 = 0;
+    for ( i = sithSurface_aSurfaces; v2 <= sithSurface_numSurfaces; ++i )
+    {
+        if ( (i->flags & SITH_SURFACE_WATER) != 0 && i->sithSurfaceParent == a1 )
+            break;
+        ++v2;
+    }
+    v4 = (v2 > sithSurface_numSurfaces ? NULL : i);
+    if ( v4 )
+    {
+        *out = v4->field_24;
+    }
+    else
+    {
+        rdVector_Zero3(out);
+    }
+}
+
+int sithSurface_GetCenterPoint(SithSurface *pSurface, rdVector3 *centerpoint)
+{
+    rdVector3 a1a; // [esp+14h] [ebp-18h] BYREF
+    rdVector3 a2a; // [esp+20h] [ebp-Ch] BYREF
+
+    rdVector_Zero3(&a1a);
+    for (uint32_t i = 0; i < pSurface->surfaceInfo.face.numVertices; ++i )
+        rdVector_Add3Acc(&a1a, &sithWorld_g_pCurrentWorld->aVertices[pSurface->surfaceInfo.face.vertexPosIdx[i]]);
+
+    rdVector_InvScale3(centerpoint, &a1a, (flex_t)(uint32_t)pSurface->surfaceInfo.face.numVertices); // FLEXTODO
+
+    if ( !sithIntersect_IsSphereInSector(centerpoint, 0.0, pSurface->pSector) )
+    {
+        rdVector_Scale3(&a2a, &pSurface->surfaceInfo.face.normal, 0.0002);
+        rdVector_Add3Acc(centerpoint, &a2a);
+    }
+    return sithIntersect_IsSphereInSector(centerpoint, 0.0, pSurface->pSector);
+}
+
+rdSurface* sithSurface_SlideHorizonSky(int skyType, rdVector2 *a2)
+{
+    rdSurface *result; // eax
+    int32_t v3; // edx
+    rdSurface *v4; // esi
+
+    //result = (rdSurface *)sithSurface_numAvail;
+    // Added: fix undef behavior?
+    result = NULL;
+    if ( sithSurface_numAvail )
+    {
+        v3 = sithSurface_aAvail[sithSurface_numAvail--];
+        if ( v3 > sithSurface_numSurfaces )
+            sithSurface_numSurfaces = v3;
+        v4 = &sithSurface_aSurfaces[v3];
+        _memset(v4, 0, sizeof(rdSurface));
+        result = v4;
+        v4->index = ((playerThingIdx + 1) << 16) | (uint16_t)v3;
+    }
+    if ( result )
+    {
+        if ( skyType == SITH_SURFACE_HORIZONSKY )
+        {
+            result->flags = 0x900000;
+            rdVector_Copy2(&result->scrollVector, a2);
+        }
+        else
+        {
+            if ( skyType == SITH_SURFACE_CEILINGSKY )
+                result->flags = 0x1100000;
+            rdVector_Copy2(&result->scrollVector, a2);
+        }
+    }
+    return result;
+}
+
+rdSurface* sithSurface_sub_4F00A0(SithThing *thing, flex_t a2, uint32_t a3)
+{
+    rdSurface *v3; // esi
+    int32_t v4; // edx
+    rdSurface *result; // eax
+    int32_t v6; // edx
+    rdSprite *v7; // eax
+    uint32_t v8; // rax
+
+    if ( sithSurface_numAvail )
+    {
+        v4 = sithSurface_aAvail[sithSurface_numAvail--];
+        if ( v4 > sithSurface_numSurfaces )
+            sithSurface_numSurfaces = v4;
+        v3 = &sithSurface_aSurfaces[v4];
+        _memset(v3, 0, sizeof(rdSurface));
+        v3->index = ((playerThingIdx + 1) << 16) | (uint16_t)v4;
+    }
+    else
+    {
+        v3 = 0;
+    }
+    if ( !v3 )
+        return 0;
+    thing->renderData.wallCel = 0;
+    if ( (a3 & 4) != 0 )
+        v3->wallCel = 2;
+    else
+        v3->wallCel = (a3 & 2) != 0;
+    v6 = thing->signature;
+    v3->flags = a3 | SITH_SURFACE_200000|SITH_SURFACE_EARTH;
+    v7 = thing->renderData.sprite3;
+    v3->parent_thing = thing;
+    v3->signature = v6;
+    v3->material = v7->face.material;
+    v8 = (uint32_t)(1000.0 / a2);
+    uint32_t v8_hi = sithTime_g_msecGameTime;
+    v3->field_34 = v8;
+    v8_hi += v8;
+    result = v3;
+    v3->field_30 = v8_hi;
+    return result;
+}
+
+rdSurface* sithSurface_SetThingLight(SithThing *thing, flex_t a2, flex_t a3, int a4)
+{
+    flex_d_t v5; // st7
+    rdSurface *result; // eax
+    int32_t v9; // edx
+    flex_d_t v11; // st7
+    flex_t a1a; // [esp+4h] [ebp+4h]
+
+    v5 = a2 - thing->light;
+    if ( v5 == 0.0 )
+        return 0;
+
+    result = sithSurface_Alloc();
+
+    if ( result )
+    {
+        v9 = thing->signature;
+        result->parent_thing = thing;
+        result->signature = v9;
+        result->flags = a4 & 1 | SITH_SURFACE_400000|SITH_SURFACE_PUDDLE;
+        thing->flags |= SITH_TF_EMITLIGHT;
+        a1a = v5;
+        result->field_44 = a1a / a3;
+        v11 = thing->light;
+        result->field_3C = thing->light;
+        result->field_48 = v11;
+        result->field_40 = a2;
+    }
+    return result;
+}
+
+void sithSurface_HandleThingImpact(SithSurface *pSurf, SithThing *pThing, flex_t damage, int damageType)
+{
+    flex_t v4; // [esp+0h] [ebp-14h]
+
+    if ( (!sithNet_isMulti || !pThing || (pThing->flags & SITH_TF_INVULN) == 0) && (pSurf->flags & SITH_SURFACE_COG_LINKED) != 0 )
+    {
+        v4 = (flex_t)(uint32_t)damageType; // FLEXTODO
+        sithCog_SurfaceSendMessageEx(pSurf, pThing, SITH_MESSAGE_DAMAGED, damage, v4, 0.0, 0.0);
+    }
+}
+
+rdSurface* sithSurface_GetRdSurface(SithSurface *surface)
+{
+    int32_t v1; // ecx
+    rdSurface *i; // eax
+
+    v1 = 0;
+    for ( i = sithSurface_aSurfaces; v1 <= sithSurface_numSurfaces; ++i )
+    {
+        if ( (i->flags & 0x20000) != 0 && i->sithSurfaceParent == surface )
+            break;
+        ++v1;
+    }
+    return (rdSurface *)(v1 > sithSurface_numSurfaces ? 0 : (intptr_t)i);
+}
+
+rdSurface* sithSurface_GetByIdx(int idx)
+{
+    int32_t v1; // ecx
+    rdSurface *i; // eax
+
+    v1 = 0;
+    if ( sithSurface_numSurfaces < 0 )
+        return 0;
+    for ( i = sithSurface_aSurfaces; !i->flags || i->index != idx; ++i )
+    {
+        if ( ++v1 > sithSurface_numSurfaces )
+            return 0;
+    }
+    return &sithSurface_aSurfaces[v1];
+}
+
+void sithSurface_SyncFull(int mpFlags)
+{
+    if (!(sithMessage_g_outputstream & mpFlags)) return;
+
+    for (int32_t i = 0; i <= sithSurface_numSurfaces; i++) // TODO: off by one?
+    {
+        int32_t flags = sithSurface_aSurfaces[i].flags;
+        if ( flags && ((flags & 0xC0000) == 0 || !sithSurface_aSurfaces[i].parent_thing || sithThing_CanSync(sithSurface_aSurfaces[i].parent_thing)) )
+            sithDSS_AnimStatus(&sithSurface_aSurfaces[i], 0, mpFlags);
+    }
+}
+
+rdSurface* sithSurface_Alloc()
+{
+    int32_t v1; // edx
+    rdSurface *v2; // esi
+
+    if (!sithSurface_numAvail)
+        return NULL;
+
+    v1 = sithSurface_aAvail[sithSurface_numAvail--];
+    if ( v1 > sithSurface_numSurfaces )
+        sithSurface_numSurfaces = v1;
+    
+    v2 = &sithSurface_aSurfaces[v1];
+    _memset(v2, 0, sizeof(rdSurface));
+    v2->index = ((playerThingIdx + 1) << 16) | (uint16_t)v1;
+    return v2;
+}
+
+SithSurface* sithSurface_sub_4E63B0(int idx)
+{
+    SithSurface *result; // eax
+
+    if ( sithWorld_g_pCurrentWorld && idx >= 0 && idx < sithWorld_g_pCurrentWorld->numSurfaces )
+        result = &sithWorld_g_pCurrentWorld->surfaces[idx];
+    else
+        result = 0;
+    return result;
+}
+
+void sithSurface_SyncSurface(SithSurface *pSurface)
+{
+    SITH_ASSERTREL(pSurface); // Added: ported from OpenJones3D
+    pSurface->flags |= SITH_SURFACE_CHANGED;
+
+    if ( sithSurface_numUnsyncedSurfaces < 0x20 )
+    {
+        aSithSurfaces[sithSurface_numUnsyncedSurfaces++] = pSurface;
+    }
+}
+
+void sithSurface_SyncSurfaces()
+{
+    if (!sithMessage_g_outputstream) return;
+
+    for (uint32_t v0 = 0; v0 < sithSurface_numUnsyncedSurfaces; v0++)
+    {
+        sithDSS_SurfaceStatus(aSithSurfaces[v0], -1, 255);
+    }
+
+    sithSurface_numUnsyncedSurfaces = 0;
+}

@@ -1,0 +1,44 @@
+# --- copyrighted game data: never commit ---
+# Bring your own Jedi Knight / Mysteries of the Sith CD images; see gamedata/README.md.
+/gamedata/*
+!/gamedata/README.md
+
+# --- build output ---
+/output/*
+!/output/README.md
+*.iso
+*.gcm
+*.dol
+*.elf
+/OpenJKDF2/build_gamecube/
+# prebuilt engine in release bundles (built by CI)
+/engine/
+# CI staging
+/stage/
+
+# --- local development / testing (dev.sh, headless Dolphin, record_access.py) ---
+/disc/
+/disc_mots/
+/rec/
+/frames/
+/cmp/
+/dolphin-user/
+/.dolphin-gc/
+*.log
+
+# --- OpenJKDF2's third-party submodules (not used by the GameCube build) ---
+/OpenJKDF2/lib/*/
+
+# --- editors / OS / python ---
+/.vscode/
+.vs/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+__pycache__/
+*.pyc
+
+# --- backup of OpenJKDF2's own git history (upstream base 02297602) ---
+/.openjkdf2-upstream.git/

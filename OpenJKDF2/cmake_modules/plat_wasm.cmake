@@ -1,0 +1,57 @@
+macro(plat_initialize)
+    message( STATUS "Targeting Emscripten WASM" )
+
+    set(BIN_NAME "openjkdf2")
+
+    add_definitions(-DARCH_WASM)
+
+    include(cmake_modules/plat_feat_full_sdl2.cmake)
+    set(TARGET_USE_PHYSFS FALSE)
+    set(OPENJKDF2_NO_ASAN TRUE)
+    set(TARGET_CAN_JKGM FALSE)
+    set(TARGET_USE_CURL FALSE)
+    set(TARGET_BUILD_TESTS FALSE)
+    set(TARGET_FIND_OPENAL FALSE)
+    set(TARGET_USE_GAMENETWORKINGSOCKETS FALSE)
+    set(SDL2_COMMON_LIBS "")
+
+    set(TARGET_WASM TRUE)
+
+    add_link_options(-fno-exceptions)
+    add_compile_options(-fno-exceptions)
+    # NOTE: Emscripten's port system has no SDL3_mixer port as of this writing (only
+    # -sUSE_SDL_MIXER=2 exists), so it's dropped here -- stdMci.c's SDL2_RENDER branch
+    # now speaks the SDL3_mixer API, which the SDL2_mixer port can't satisfy. WASM
+    # builds until someone either vendors SDL3_mixer from source for WASM or Emscripten
+    # ships a port; music/mixer playback is unverified/broken on this target for now.
+    set(USE_FLAGS "-sUSE_SDL=3 -sWASM=1 -s ALLOW_MEMORY_GROWTH=1 -sFULL_ES2 -sFULL_ES3 -sUSE_WEBGL2=1 -sASYNCIFY -sINITIAL_MEMORY=200mb -s STACK_SIZE=100mb")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${USE_FLAGS}")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${USE_FLAGS}")
+    #set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${USE_FLAGS} --profiling --preload-file ${PROJECT_SOURCE_DIR}/wasm_out@/ ")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${USE_FLAGS} --profiling -s FORCE_FILESYSTEM=1 ")
+    set(CMAKE_EXECUTABLE_SUFFIX .js)
+
+    # Added: jk.c's _wcslen(const char16_t*) is a plain `for(len=0;str[len];len++)` loop,
+    # but LLVM's builtin-recognition pass pattern-matches that exact shape as the "wcslen
+    # idiom" and silently rewrites it into a call to the real libc wcslen() -- which on
+    # Emscripten operates on 4-byte wchar_t, not our 2-byte char16_t. Confirmed via `nm`
+    # (an otherwise-inexplicable undefined `U wcslen` in jk.c.o) and by hand-decoding raw
+    # string-table bytes against 4-byte units, which exactly reproduces the observed
+    # "menu text cut roughly in half" corruption. -fno-builtin-wcslen keeps our real
+    # implementation in place.
+    add_compile_options(-O2 -Wuninitialized -fshort-wchar -Wall -Wno-unused-variable -Wno-parentheses -Wno-missing-braces -fno-builtin-wcslen)
+endmacro()
+
+macro(plat_specific_deps)
+    set(SDL2_COMMON_LIBS "")
+endmacro()
+
+macro(plat_link_and_package)
+    target_link_libraries(${BIN_NAME} PRIVATE -lm -lSDL3 -lGL -lGLEW -lopenal -lidbfs.js)
+    target_link_libraries(sith_engine PRIVATE nlohmann_json::nlohmann_json)
+
+    add_custom_command(TARGET ${BIN_NAME}
+        POST_BUILD
+        COMMAND $ENV{EMSCRIPTEN_ROOT}/tools/file_packager ${CMAKE_CURRENT_BINARY_DIR}/openjkdf2_data.data --preload ${PROJECT_SOURCE_DIR}/wasm_out@/ --js-output=${CMAKE_CURRENT_BINARY_DIR}/openjkdf2_data.js 
+        )
+endmacro()

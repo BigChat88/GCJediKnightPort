@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>OpenJKDF2</string>
+	<key>CFBundleDisplayName</key>
+	<string>OpenJKDF2</string>
+	<key>CFBundleExecutable</key>
+	<string>@BIN_NAME@</string>
+	<key>CFBundleIdentifier</key>
+	<string>@IOS_BUNDLE_ID@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@</string>
+	<key>CFBundleVersion</key>
+	<string>@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon.png</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>@IOS_PLATFORM_NAME@</string>
+	</array>
+	<key>MinimumOSVersion</key>
+	<string>@CMAKE_OSX_DEPLOYMENT_TARGET@</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+	<!-- Metal-only: ANGLE's backend here is Metal, there is no GL fallback. -->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+		<string>metal</string>
+	</array>
+	<!-- Without a UILaunchScreen key, iOS runs the app in a letterboxed
+	     compatibility mode at a legacy resolution, so the CAMetalLayer ANGLE
+	     draws into would not be the size of the screen. -->
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIStatusBarHidden</key>
+	<true/>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<!-- Opt in to real pointer events. Without this, UIKit only delivers
+	     synthesized touches and a physically attached mouse/trackpad (a
+	     Simulator host trackpad, or a paired mouse on iPadOS) cannot drive the
+	     mouse-based JK menus; iOS also logs a warning about it at launch. -->
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<!-- The game assets live in Documents/ (see InstallHelper_GetLocalDataDir);
+	     these two make that folder reachable from Finder file sharing and the
+	     Files app, which is the only way to get a JKDF2 install onto an iPhone. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>SDL_FILESYSTEM_BASE_DIR_TYPE</key>
+	<string>bundle</string>
+</dict>
+</plist>

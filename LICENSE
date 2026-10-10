@@ -1,0 +1,23 @@
+GCJediKnight -- the Nintendo GameCube port of OpenJKDF2.
+
+The engine in OpenJKDF2/ is OpenJKDF2 (https://github.com/shinyquagsire23/OpenJKDF2),
+Copyright (C) OpenJKDF2 contributors, with the GameCube port added on top. Its
+license, including the notices for the third-party code it bundles, is in
+OpenJKDF2/LICENSE.md. The port and the tools in this repository are released
+under the same terms:
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+Star Wars Jedi Knight: Dark Forces II and Mysteries of the Sith are Copyright (C)
+Lucasfilm Ltd. LucasArts, the LucasArts logo, STAR WARS and related properties are
+trademarks of Lucasfilm Ltd. and/or its affiliates. No game data is included in
+this repository; you need your own copy of the games.

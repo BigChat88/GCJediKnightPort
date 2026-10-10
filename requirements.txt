@@ -1,0 +1,2 @@
+numpy   # CD soundtrack conversion (optional: --no-music skips it)
+Pillow  # disc banner

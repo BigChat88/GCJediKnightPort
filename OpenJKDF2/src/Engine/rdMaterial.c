@@ -1,0 +1,1185 @@
+#include "General/stdEndian.h"
+#include "rdMaterial.h"
+
+#include "General/stdString.h"
+#include "Engine/rdroid.h"
+#include "Win95/stdDisplay.h"
+#include "Win95/std.h"
+#include "Platform/std3D.h"
+#include "stdPlatform.h"
+#include "Main/jkRes.h"
+#include "jk.h"
+
+#ifdef SDL2_RENDER
+#include "Platform/GL/jkgm.h"
+#endif
+
+#ifdef TARGET_GAMECUBE
+#include "Platform/GameCube/gcAram.h" // Added: material pixels in ARAM
+extern int stdDisplay_gcNoPixels;
+int stdDisplay_GcAllocPixels(tVBuffer* out);
+int std3D_GcCanUseAram(const tRasterInfo* fmt);
+int std3D_GcLoadPixelsToAram(tVBuffer* vbuf, stdFile_t f, size_t (*fileRead)(stdFile_t, void*, size_t));
+#endif
+
+#ifdef TARGET_TWL
+#include <nds.h>
+#endif
+
+// Added: SafeStrCopy variant for destinations that may live in word-addressable-
+// only memory (the world aMaterials array on TWL): stage on the stack, then a
+// word-safe copy of the terminated string.
+static void rdMaterial_WordSafeStrCopy(char* pDst, const char* pSrc, int len)
+{
+    char tmp[128];
+    stdString_SafeStrCopy(tmp, pSrc, len > 128 ? 128 : len);
+    stdPlatform_Memcpy32(pDst, tmp, _strlen(tmp) + 1);
+}
+
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+
+rdMaterial* rdMaterial_pFirstMatCache = NULL;
+rdMaterial* rdMaterial_pLastMatCache = NULL;
+int rdMaterial_numCachedMaterials = 0;
+
+#endif
+
+rdMaterialLoader_t rdMaterial_RegisterLoader(rdMaterialLoader_t pFunc)
+{
+    rdMaterialLoader_t result = pMaterialsLoader;
+    pMaterialsLoader = pFunc;
+    return result;
+}
+
+rdMaterialUnloader_t rdMaterial_RegisterUnloader(rdMaterialUnloader_t pFunc)
+{
+    rdMaterialUnloader_t result = pMaterialsUnloader;
+    pMaterialsUnloader = pFunc;
+    return result;
+}
+
+rdMaterial* rdMaterial_Load(char *pFilename, int create_ddraw_surface, int gpu_memory)
+{
+    rdMaterial *material;
+    unsigned int v5;
+    void **v6;
+    int *v7;
+    unsigned int v8;
+    tVBuffer **v9;
+    unsigned int gpu_mem;
+
+#if 0 // sithMaterial already does this more or less, via rdMaterial_RegisterLoader
+    rdMaterial* pIter = rdMaterial_pFirstMatCache;
+    while (pIter) {
+        if (!strcmp(pFilename, pIter->mat_full_fpath)) {
+            pIter->refcnt++;
+            return pIter;
+        }
+        pIter = pIter->pNextCachedMaterial;
+    }
+#endif
+
+    if (pMaterialsLoader)
+        return (rdMaterial*)pMaterialsLoader(pFilename, create_ddraw_surface, gpu_memory);
+
+    material = (rdMaterial*)RDROID_ALLOC(sizeof(rdMaterial));
+    if (material && rdMaterial_LoadEntry(pFilename, material, create_ddraw_surface, gpu_memory))
+        return material;
+
+    rdMaterial_Free(material);
+
+    return NULL;
+}
+
+int rdMaterial_LoadEntry_Common(char *mat_fpath, rdMaterial *material, int create_ddraw_surface, int gpu_mem, int bDoLoad)
+{
+    stdFile_t mat_file; // eax
+    stdFile_t mat_file_; // ebx
+    int num_texinfo; // eax
+    int tex_type; // edx
+    int *texture_idk; // edi
+    rdTexinfo *texinfo_alloc; // eax
+    int num_textures; // ecx
+    rdTexture *textures; // eax
+    rdTexture *texture; // esi
+    unsigned int mipmap_num; // ebx
+    tVBuffer **texture_struct; // edi
+    int v21; // cf
+    unsigned int v22; // edi
+    int *v23; // esi
+    rdTexinfo **v24; // ebx
+    rdColor24 *colors; // eax
+    char *v26; // eax
+    stdFile_t mat_file__; // [esp+10h] [ebp-128h]
+    int tex_num; // [esp+14h] [ebp-124h]
+    int tex_numa; // [esp+14h] [ebp-124h]
+    rdTextureHeader tex_header_1; // [esp+20h] [ebp-118h]
+    rdTexinfoHeader texinfo_header; // [esp+38h] [ebp-100h]
+    rdTexinfoExtHeader tex_ext; // [esp+50h] [ebp-E8h]
+    tRasterInfo format; // [esp+60h] [ebp-D8h]
+    rdMaterialHeader mat_header; // [esp+ACh] [ebp-8Ch]
+    int textures_idk[RDMATERIAL_MAX_TEXINFOS]; // [esp+F8h] [ebp-40h]
+    tVBuffer *created_tex; // eax
+
+    // Added: No nullptr derefs
+    if (!material) {
+        return 0;
+    }
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    if (bDoLoad) {
+        if (material->bDataLoaded) {
+            return 1;
+        }
+    }
+#endif
+
+    memset(&format, 0, sizeof(format));
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    //if (!bDoLoad) {
+#endif
+        stdPlatform_Memzero32(material, sizeof(rdMaterial)); // Added: word-safe
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    //}
+#endif
+
+#if 0
+    if (!bDoLoad) {
+        material->refcnt = 1;
+    }
+#endif
+
+    mat_file = rdroid_g_pHS->fileOpen(mat_fpath, "rb");
+    mat_file_ = mat_file;
+    mat_file__ = mat_file;
+    if (!mat_file) {
+        //jk_printf("OpenJKDF2: Material `%s` could not be opened!\n", mat_fpath); // Added
+        return 0;
+    }
+
+    rdroid_g_pHS->fileRead(mat_file, &mat_header, sizeof(rdMaterialHeader));
+    // Added: big-endian hosts. Everything after the magic is 32-bit LE.
+    stdEndian_SwapLE32Array((uint8_t*)&mat_header + 4, (sizeof(rdMaterialHeader) - 4) / 4);
+    if ( _memcmp(mat_header.magic, "MAT ", 4u) || mat_header.revision != '2' )
+    {
+        stdPlatform_Printf("OpenJKDF2: Material `%s` has improper magic or bad revision!\n", mat_fpath); // Added
+        rdroid_g_pHS->fileClose(mat_file_);
+
+        return 0;
+    }
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    // We have to short-circuit here so that we get the right fullpath
+    if (!bDoLoad) {
+        // We need this to ensure sithMaterial loader doesn't break
+#ifdef SITH_DEBUG_STRUCT_NAMES
+        rdMaterial_WordSafeStrCopy(material->mat_fpath, stdFileFromPath(mat_fpath), sizeof(material->mat_fpath)); // Added: word-safe
+#endif
+        rdMaterial_WordSafeStrCopy(material->mat_full_fpath, mat_fpath, sizeof(material->mat_full_fpath)); // Added: word-safe
+        rdroid_g_pHS->fileClose(mat_file_);
+        return 1;
+    }
+#endif
+
+    num_texinfo = mat_header.num_texinfo;
+
+    // Added: prevent mem corruption
+    if (num_texinfo > RDMATERIAL_MAX_TEXINFOS) {
+        num_texinfo = RDMATERIAL_MAX_TEXINFOS;
+    }
+    else if (num_texinfo < 0) {
+        num_texinfo = 0;
+    }
+
+    tex_type = mat_header.type;
+    material->num_textures = mat_header.num_textures;
+    material->tex_type = tex_type;
+    material->num_texinfo = num_texinfo;
+    material->curCelNum = 0;
+    tex_num = 0;
+#ifdef RDMATERIAL_MINIMIZE_STRUCTS
+    material->texFormat.is16bit = mat_header.texFormat.is16bit;
+    material->texFormat.bpp = mat_header.texFormat.bpp;
+#else
+    _memcpy(&material->texFormat, &mat_header.texFormat, sizeof(material->texFormat));
+#endif
+    texture_idk = textures_idk;
+    stdPlatform_Memzero32(material->texinfos, sizeof(material->texinfos)); // Added: just in case? (word-safe)
+    for (tex_num = 0; tex_num < material->num_texinfo; tex_num++)
+    {
+        { TWL_EXTRAM_SUGGEST(rdroid_g_pHS); // Added: texinfo fields are all word-width
+        texinfo_alloc = (rdTexinfo *)RDROID_ALLOC(sizeof(rdTexinfo));
+        TWL_EXTRAM_RESTORE(rdroid_g_pHS); }
+        material->texinfos[tex_num] = texinfo_alloc;
+        if ( !texinfo_alloc )
+        {
+            stdPlatform_Printf("OpenJKDF2: Material `%s` texinfo could not be allocated!\n", mat_fpath); // Added
+            rdroid_g_pHS->fileClose(mat_file_);
+
+            return 0;
+        }
+        memset(texinfo_alloc, 0, sizeof(rdTexinfo)); // Moved
+        rdroid_g_pHS->fileRead(mat_file_, &texinfo_header, sizeof(rdTexinfoHeader));
+        stdEndian_SwapLE32Array(&texinfo_header, sizeof(rdTexinfoHeader) / 4); // Added: big-endian hosts
+        texinfo_alloc->header = texinfo_header;
+        if ( texinfo_header.texture_type & 8 )  // bitflag for texture, not color
+        {
+              rdroid_g_pHS->fileRead(mat_file_, &tex_ext, sizeof(rdTexinfoExtHeader));
+              stdEndian_SwapLE32Array(&tex_ext, sizeof(rdTexinfoExtHeader) / 4); // Added: big-endian hosts
+              texinfo_alloc->texext_unk00 = tex_ext.unk_00;
+              *texture_idk = tex_ext.unk_0c;
+        }
+        else {
+            // Added: uninitialized memory getting used as an index later, yikes
+            *texture_idk = 0;
+        }
+        ++texture_idk;
+    }
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    material->bMetadataLoaded = 1;
+    // Short circuit only after metadata
+    if (bDoLoad == 2) {
+        rdMaterial_WordSafeStrCopy(material->mat_full_fpath, mat_fpath, sizeof(material->mat_full_fpath)); // Added: word-safe
+        rdroid_g_pHS->fileClose(mat_file_);
+        return 1;
+    }
+#endif
+    num_textures = material->num_textures;
+    material->textures = 0;
+    if ( num_textures )
+    {
+      { TWL_EXTRAM_SUGGEST(rdroid_g_pHS); // Added: rdTexture fields are all word-width
+      textures = (rdTexture *)RDROID_ALLOC(sizeof(rdTexture) * num_textures);
+      TWL_EXTRAM_RESTORE(rdroid_g_pHS); }
+      if ( !textures )
+      {
+        stdPlatform_Printf("OpenJKDF2: Material `%s` textures array could not be allocated!\n", mat_fpath); // Added
+        rdroid_g_pHS->fileClose(mat_file_);
+
+        return 0;
+      }
+      // Moved?
+      memset(textures, 0, sizeof(rdTexture) * num_textures);
+      material->textures = textures;
+    }
+    else {
+        // Some aMaterials are solid colors
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+        material->bDataLoaded = bDoLoad;
+#endif
+    }
+    tex_numa = 0;
+    if ( material->num_textures )
+    {
+      while ( 1 )
+      {
+        //printf("asdf %x %x\n", tex_numa, material->num_textures);
+        rdroid_g_pHS->fileRead(mat_file_, &tex_header_1, sizeof(rdTextureHeader));
+        stdEndian_SwapLE32Array(&tex_header_1, sizeof(rdTextureHeader) / 4); // Added: big-endian hosts
+        texture = &material->textures[tex_numa];
+        texture->alpha_en = tex_header_1.alpha_en;
+        texture->unk_0c = tex_header_1.unk_0c;
+        texture->width_bitcnt = stdCalcBitPos(tex_header_1.width);
+        texture->width_minus_1 = tex_header_1.width - 1;
+        mipmap_num = 0;
+        texture->height_minus_1 = tex_header_1.height - 1;
+        texture->num_mipmaps = tex_header_1.num_mipmaps;
+        texture->color_transparent = tex_header_1.unk_10;
+        format.width = tex_header_1.width;
+        format.height = tex_header_1.height;
+        format.format.is16bit = material->texFormat.is16bit;
+        format.format.bpp = material->texFormat.bpp;
+        if ( texture->num_mipmaps )
+          break;
+
+LABEL_21:
+        mat_file_ = mat_file__;
+        v21 = (unsigned int)(tex_numa++ + 1) < material->num_textures;
+        if ( !v21 )
+          goto LABEL_22;
+      }
+      texture_struct = (tVBuffer **)texture->texture_struct;
+      while ( 1 )
+      {
+        texture->alphaMats[mipmap_num].texture_loaded = 0;
+        texture->alphaMats[mipmap_num].frameNum = 0;
+        texture->opaqueMats[mipmap_num].texture_loaded = 0;
+        texture->opaqueMats[mipmap_num].frameNum = 0;
+#ifdef SDL2_RENDER
+#if defined(TARGET_CAN_JKGM)
+        texture->alphaMats[mipmap_num].skip_jkgm = 0;
+        texture->opaqueMats[mipmap_num].skip_jkgm = 0;
+#endif
+#endif
+
+#if defined(TARGET_RETRO_HOMEBREW)
+        texture->alphaMats[mipmap_num].width = format.width;
+        texture->alphaMats[mipmap_num].height = format.height;
+        texture->opaqueMats[mipmap_num].width = format.width;
+        texture->opaqueMats[mipmap_num].height = format.height;
+#endif
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+        if (!bDoLoad) {
+            std_g_pHS->fseek(mat_file__, format.width*format.height*(format.format.is16bit?2:1), SEEK_CUR);
+            goto no_loading;
+        }
+#endif
+
+#if !defined(TARGET_RETRO_HOMEBREW)
+        //printf("Load %s tex %d/%d mip %d/%d\n", mat_fpath, tex_numa, material->num_textures, mipmap_num, texture->num_mipmaps);
+        created_tex = stdDisplay_VBufferNew(&format, create_ddraw_surface, gpu_mem, 0);
+        *texture_struct = created_tex;
+        if ( !created_tex )
+          break;
+        if ( texture->alpha_en & 1 )
+          stdDisplay_VBufferSetColorKey(created_tex, texture->color_transparent);
+        stdDisplay_VBufferLock(*texture_struct);
+        rdroid_g_pHS->fileRead(
+          mat_file__,
+          (void *)(*texture_struct)->surface_lock_alloc,
+          (*texture_struct)->format.size);
+        if (format.format.is16bit) // Added: big-endian hosts
+            stdEndian_SwapLE16Array((*texture_struct)->surface_lock_alloc, (*texture_struct)->format.size / 2);
+        stdDisplay_VBufferUnlock(*texture_struct);
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+        material->bDataLoaded = bDoLoad;
+#endif
+
+#else // if defined(TARGET_RETRO_HOMEBREW)
+        // Limit textures that are loaded on TWL
+#ifdef TARGET_GAMECUBE
+        // Full-resolution mip 0 only: GX does the filtering, and rdCache falls back
+        // to the closest loaded mip.
+        if (mipmap_num == 0) {
+#elif defined(TARGET_TWL)
+        if ((format.width <= 16 || mipmap_num >= texture->num_mipmaps-1)) {
+#else
+        if ((format.width <= 16 || mipmap_num >= texture->num_mipmaps-1)) { // Dreamcast has Big Boy amounts of VRAM
+#endif
+#ifndef TARGET_GAMECUBE // Added: per-texture logging goes over a slow debug UART there
+            printf("Load %s tex %d/%d mip %d/%d\n", mat_fpath, tex_numa, material->num_textures, mipmap_num, texture->num_mipmaps);
+#endif
+#ifdef TARGET_GAMECUBE
+            // Added: pixels go to the ARAM texture pool, not main RAM (see
+            // std3D_GcLoadPixelsToAram).
+            int bGcAram = std3D_GcCanUseAram(&format) && gcAram_poolSize;
+            stdDisplay_gcNoPixels = bGcAram;
+#endif
+            created_tex = stdDisplay_VBufferNew(&format, create_ddraw_surface, gpu_mem, 0);
+#ifdef TARGET_GAMECUBE
+            stdDisplay_gcNoPixels = 0;
+#endif
+            *texture_struct = created_tex;
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+            material->bDataLoaded = bDoLoad;
+#endif
+            if ( !created_tex ) {
+                /*mat_file_ = mat_file__;
+                rdroid_g_pHS->fileClose(mat_file_);
+                return 1;*/
+                std_g_pHS->fseek(mat_file__, format.width*format.height*(format.format.is16bit?2:1), SEEK_CUR);
+                goto no_loading;
+            }
+            (*texture_struct)->format.size = format.width*format.height*(format.format.is16bit?2:1);
+            if ( texture->alpha_en & 1 )
+              stdDisplay_VBufferSetColorKey(created_tex, texture->color_transparent);
+#ifdef TARGET_GAMECUBE
+            if (bGcAram) {
+                if (std3D_GcLoadPixelsToAram(created_tex, mat_file__, rdroid_g_pHS->fileRead))
+                    goto no_loading;
+                // ARAM pool full: main RAM after all.
+                if (!stdDisplay_GcAllocPixels(created_tex)) {
+                    stdDisplay_VBufferFree(created_tex);
+                    *texture_struct = NULL;
+                    std_g_pHS->fseek(mat_file__, format.width*format.height, SEEK_CUR);
+                    goto no_loading;
+                }
+            }
+#endif
+            stdDisplay_VBufferLock(*texture_struct);
+            // Added: bounce through a temp; fileRead byte-writes internally and the
+            // pVBuffer may be word-addressable-only (DC VRAM / NDS slot-2).
+            {
+                uint32_t mipLen = (*texture_struct)->format.size;
+#ifdef TARGET_GAMECUBE
+                void* pMipTmp = NULL; // plain RAM: read in place (a temp per texture fragmented the heap)
+#else
+                void* pMipTmp = STD_ALLOC(mipLen);
+#endif
+                if (pMipTmp) {
+                    rdroid_g_pHS->fileRead(mat_file__, pMipTmp, mipLen);
+                    if (format.format.is16bit) // Added: big-endian hosts
+                        stdEndian_SwapLE16Array(pMipTmp, mipLen / 2);
+                    stdPlatform_Memcpy32((*texture_struct)->surface_lock_alloc, pMipTmp, mipLen);
+                    STD_FREE(pMipTmp);
+                } else {
+                    rdroid_g_pHS->fileRead(mat_file__, (void *)(*texture_struct)->surface_lock_alloc, mipLen);
+                    if (format.format.is16bit) // Added: big-endian hosts
+                        stdEndian_SwapLE16Array((*texture_struct)->surface_lock_alloc, mipLen / 2);
+                }
+            }
+            stdDisplay_VBufferUnlock(*texture_struct);
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+            material->bDataLoaded = bDoLoad;
+#endif
+        }
+        else {
+            std_g_pHS->fseek(mat_file__, format.width*format.height*(format.format.is16bit?2:1), SEEK_CUR);
+        }
+#endif
+no_loading:
+        format.width = (unsigned int)format.width >> 1;
+        format.height = (unsigned int)format.height >> 1;
+        ++mipmap_num;
+        ++texture_struct;
+        if ( mipmap_num >= texture->num_mipmaps )
+        {
+          goto LABEL_21;
+        }
+      }
+      stdPlatform_Printf("OpenJKDF2: Material `%s` vbuffer could not be allocated!\n", mat_fpath); // Added
+      mat_file_ = mat_file__;
+      rdroid_g_pHS->fileClose(mat_file_);
+
+      return 0;
+    }
+LABEL_22:
+    v22 = 0;
+    if ( material->num_texinfo )
+    {
+      v23 = textures_idk;
+      v24 = material->texinfos;
+      do
+      {
+        if ( (*v24)->header.texture_type & 8 )
+          (*v24)->texture_ptr = &material->textures[*v23];
+        else
+          (*v24)->texture_ptr = NULL; // Added
+        ++v22;
+        ++v23;
+        ++v24;
+      }
+      while ( v22 < material->num_texinfo );
+      mat_file_ = mat_file__;
+    }
+#ifndef TARGET_RETRO_HOMEBREW
+    if ( material->tex_type & 1 )
+    {
+      colors = (rdColor24 *)RDROID_ALLOC(0x300u);
+      material->palette_alloc = colors;
+      if ( !colors )
+      {
+        jk_printf("OpenJKDF2: Material `%s` color palette could not be allocated!\n", mat_fpath); // Added
+        rdroid_g_pHS->fileClose(mat_file_);
+
+        return 0;
+      }
+      // Added: checked read -- a short read here left a garbage palette
+      // (intermittent wrong/pink material colors). Resume short reads.
+      {
+        int gotPal = 0;
+        while (gotPal < 0x300) {
+          int r = rdroid_g_pHS->fileRead(mat_file_, (char*)colors + gotPal, 0x300 - gotPal);
+          if (r <= 0) {
+            stdPlatform_Printf("OpenJKDF2: Material `%s` palette short read %d/768!\n", mat_fpath, gotPal);
+            break;
+          }
+          gotPal += r;
+        }
+      }
+    }
+#endif
+
+    // Added: Move this up to start
+    v26 = stdFileFromPath(mat_fpath);
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    rdMaterial_WordSafeStrCopy(material->mat_fpath, v26, sizeof(material->mat_fpath)); // Added: word-safe
+#endif
+    rdroid_g_pHS->fileClose(mat_file_);
+    mat_file = 1;
+
+#if defined(SDL2_RENDER) || defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    rdMaterial_WordSafeStrCopy(material->mat_full_fpath, mat_fpath, sizeof(material->mat_full_fpath)); // Added: word-safe
+#endif
+#ifdef SDL2_RENDER
+    for (int i = 0; i < 128; i++)
+    {
+        if (material->mat_full_fpath[i] == '\\') {
+            material->mat_full_fpath[i] = '/';
+        }
+    }
+    material->mat_full_fpath[127] = 0;
+
+    for (int i = 0; i < material->num_textures; i++)
+    {
+        rdTexture *texture = &material->textures[i];
+        texture->has_jkgm_override = 0;
+        for (int j = 0; j < texture->num_mipmaps; j++) {
+            tVBuffer* mipmap = texture->texture_struct[j];
+            rdDDrawSurface* surface = &texture->alphaMats[j];
+            
+            surface->emissive_texture_id = 0;
+            surface->displacement_texture_id = 0;
+            surface->emissive_factor[0] = 0.0;
+            surface->emissive_factor[1] = 0.0;
+            surface->emissive_factor[2] = 0.0;
+            surface->displacement_factor = 0.0;
+            surface->albedo_factor[0] = 1.0;
+            surface->albedo_factor[1] = 1.0;
+            surface->albedo_factor[2] = 1.0;
+            surface->albedo_factor[3] = 1.0;
+            surface->albedo_data = NULL;
+            surface->displacement_data = NULL;
+            surface->emissive_data = NULL;
+            surface->skip_jkgm = 0;
+            surface->cache_entry = NULL;
+
+            surface->is_16bit = 0;
+            surface->texture_loaded = 0;
+
+#if defined(TARGET_CAN_JKGM)
+            jkgm_populate_shortcuts(mipmap, surface, material, texture->alpha_en & 1, j, i);
+#endif
+        }
+    }
+#endif
+
+    return mat_file;
+}
+
+int rdMaterial_LoadEntry(char *pFilename, rdMaterial *pMat, int create_ddraw_surface, int gpu_mem)
+{
+    // Added: No nullptr derefs
+    if (!pMat) {
+        return 0;
+    }
+
+    // TODO: refcounting
+    // Added: juuuust in case
+    int prevId = pMat->id;
+    _memset(pMat, 0, sizeof(rdMaterial));
+    pMat->id = prevId;
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    return rdMaterial_LoadEntry_Common(pFilename, pMat, create_ddraw_surface, gpu_mem, /*!openjkdf2_bIsExtraLowMemoryPlatform*/0);
+#else
+    return rdMaterial_LoadEntry_Common(pFilename, pMat, create_ddraw_surface, gpu_mem, 1);
+#endif
+}
+
+int rdMaterial_LoadEntry_Deferred(rdMaterial *material, int create_ddraw_surface, int gpu_mem, int partial)
+{
+    // Added: No nullptr derefs
+    if (!material) {
+        return 0;
+    }
+
+    int res = 1;
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    char tmp[256+1];
+    if (material->bDataLoaded) {
+        return 1;
+    }
+
+#ifdef STDPLATFORM_HEAP_SUGGESTIONS
+    int prevSuggest = pSithHS->suggestHeap(HEAP_SLOW);
+#endif
+    int prevId = material->id;
+    int prevCelIdx = material->curCelNum;
+#if 0
+    int prevRefCnt = material->refcnt;
+#endif
+
+    stdString_SafeStrCopy(tmp, material->mat_full_fpath, sizeof(tmp));
+    rdMaterial_FreeEntry(material);
+    //stdPlatform_Printf("rdMaterial_LoadEntry_Deferred %s\n", tmp);
+    //_memset(material, 0, sizeof(rdMaterial));
+    res = rdMaterial_LoadEntry_Common(tmp, material, create_ddraw_surface, gpu_mem, partial ? 2 : 1);
+    // A partial (metadata-only) load never sets bDataLoaded, so keying the
+    // free/retry on !bDataLoaded wrongly discarded a *successful* metadata load --
+    // leaving texinfos (and thus solidColor) NULL, so color-only tris rendered
+    // white. Judge each mode by its own success flag: metadata for partial, data
+    // for a full load.
+    if ((partial && !material->bMetadataLoaded) || (!partial && !material->bDataLoaded)) {
+        rdMaterial_FreeEntry(material);
+        if (rdMaterial_PurgeMaterialCache()) {
+            res = rdMaterial_LoadEntry_Common(tmp, material, create_ddraw_surface, gpu_mem, partial ? 2 : 1);
+            if (!res && !partial) {
+                rdMaterial_FreeEntry(material);
+                rdMaterial_LoadEntry_Common(tmp, material, create_ddraw_surface, gpu_mem, 0);
+            }
+        }
+    }
+    material->id = prevId;
+    material->curCelNum = prevCelIdx;
+#if 0
+    material->refcnt = prevRefCnt;
+#endif
+
+#ifdef STDPLATFORM_HEAP_SUGGESTIONS
+    pSithHS->suggestHeap(prevSuggest);
+#endif
+
+    //if (material->bDataLoaded) {
+        rdMaterial_UpdateFrameCount(material);
+    //}
+
+#ifdef TARGET_RETRO_HOMEBREW
+    //stdPlatform_PrintHeapStats();
+#endif
+#endif
+    return res;
+}
+
+void rdMaterial_Free(rdMaterial *pMaterial)
+{
+    if (!pMaterial)
+        return;
+
+#if 0
+    pMaterial->refcnt--;
+    if (pMaterial->refcnt) {
+        return;
+    }
+#endif
+
+    if (pMaterialsUnloader)
+    {
+        pMaterialsUnloader(pMaterial);
+        return;
+    }
+
+    rdMaterial_FreeEntry(pMaterial);
+
+    RDROID_FREE(pMaterial);
+}
+
+void rdMaterial_FreeEntry(rdMaterial* pMaterial)
+{
+    if (!pMaterial) {
+        return;
+    }
+    //stdPlatform_Printf("OpenJKDF2: rdMaterial_FreeEntry %s\n", material->mat_fpath);
+
+    // Added
+    rdMaterial_ResetCacheInfo(pMaterial);
+
+    for (size_t i = 0; i < pMaterial->num_texinfo; i++)
+    {
+        rdTexinfo* texinfo = pMaterial->texinfos[i];
+
+        // Added: nullptr check
+        if (texinfo) {
+
+            // Added: be extra sure this stuff is freed
+            rdTexture* pTex = texinfo->texture_ptr;
+
+            if (pTex) {
+                for (size_t j = 0; j < pTex->num_mipmaps; j++)
+                {
+                    rdDDrawSurface* surface = &pTex->alphaMats[j];
+
+#if defined(SDL2_RENDER) || defined(TARGET_RETRO_HOMEBREW)
+                    if (surface->texture_loaded) {
+                        stdPlatform_Printf("OpenJKDF2: rdMaterial_FreeEntry %s %x\n", pMaterial->mat_fpath, surface->texture_id);
+                        std3D_PurgeSurfaceRefs(&pTex->alphaMats[j]);
+                        std3D_PurgeSurfaceRefs(&pTex->opaqueMats[j]);
+                        pTex->alphaMats[j].texture_id = 0;
+                        pTex->alphaMats[j].texture_loaded = 0;
+                        pTex->alphaMats[j].frameNum = 0;
+                        pTex->opaqueMats[j].texture_id = 0;
+                        pTex->opaqueMats[j].texture_loaded = 0;
+                        pTex->opaqueMats[j].frameNum = 0;
+                    }
+#if defined(TARGET_CAN_JKGM)
+                    jkgm_free_cache_entry(surface->cache_entry);
+#endif
+#endif
+                    if (pTex->texture_struct[j]) { // Added
+                        stdDisplay_VBufferFree(pTex->texture_struct[j]);
+                        pTex->texture_struct[j] = NULL; // Added
+                    }
+                }
+            }
+            
+            texinfo->texture_ptr = NULL; // Added
+
+            RDROID_FREE(texinfo);
+        }
+
+        // Added:
+        pMaterial->texinfos[i] = NULL;
+    }
+
+    for (size_t i = 0; i < pMaterial->num_textures; i++)
+    {
+        if (!pMaterial->textures) break;
+
+        rdTexture* pTex = &pMaterial->textures[i];
+
+        for (size_t j = 0; j < pTex->num_mipmaps; j++)
+        {
+            rdDDrawSurface* surface = &pTex->alphaMats[j];
+
+#if defined(SDL2_RENDER) || defined(TARGET_RETRO_HOMEBREW)
+            if (surface->texture_loaded) {
+                stdPlatform_Printf("OpenJKDF2: rdMaterial_FreeEntry %s %x\n", pMaterial->mat_fpath, surface->texture_id);
+                std3D_PurgeSurfaceRefs(&pTex->alphaMats[j]);
+                std3D_PurgeSurfaceRefs(&pTex->opaqueMats[j]);
+                pTex->alphaMats[j].texture_id = 0;
+                pTex->alphaMats[j].texture_loaded = 0;
+                pTex->alphaMats[j].frameNum = 0;
+                pTex->opaqueMats[j].texture_id = 0;
+                pTex->opaqueMats[j].texture_loaded = 0;
+                pTex->opaqueMats[j].frameNum = 0;
+            }
+#if defined(TARGET_CAN_JKGM)
+            jkgm_free_cache_entry(surface->cache_entry);
+#endif
+#endif
+            if (pTex->texture_struct[j]) { // Added
+                stdDisplay_VBufferFree(pTex->texture_struct[j]);
+                pTex->texture_struct[j] = NULL; // Added
+            }
+            
+        }
+    }
+
+    if (pMaterial->textures) {
+        RDROID_FREE(pMaterial->textures);
+
+        // Added
+        pMaterial->textures = NULL;
+    }
+
+    // Added: nullptr check, removed type check
+    if (/*(material->tex_type & 1) &&*/ pMaterial->palette_alloc) {
+        RDROID_FREE(pMaterial->palette_alloc);
+
+        // Added
+        pMaterial->palette_alloc = NULL;
+    }
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    rdMaterial_RemoveMaterialFromCacheList(pMaterial);
+    pMaterial->bDataLoaded = 0;
+    pMaterial->bMetadataLoaded = 0;
+#endif
+}
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+static uint32_t rdMaterial_budgetFrameCount = 0;
+static uint32_t rdMaterial_budgetMs = 0;
+#endif
+
+// Added
+int rdMaterial_EnsureData(rdMaterial* pMaterial) {
+    if (!pMaterial) {
+        return 0;
+    }
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    if (pMaterial->bDataLoaded) {
+        return 1;
+    }
+
+    // Ensure that we don't stall for a ridiculous amount of time
+    // if we need to load textures
+    if (rdMaterial_budgetFrameCount != std3D_frameCount) {
+        rdMaterial_budgetMs = 0;
+        rdMaterial_budgetFrameCount = std3D_frameCount;
+    }
+    if (rdMaterial_budgetMs > 20) {
+        return 0;
+    }
+    if (rdMaterial_budgetMs > 5) {
+        uint32_t timeBefore = stdPlatform_GetTimeMsec();
+        int res = rdMaterial_EnsureMetadata(pMaterial);
+        uint32_t timeAfter = stdPlatform_GetTimeMsec();
+        rdMaterial_budgetMs += timeAfter - timeBefore;
+        return res;
+    }
+
+    uint32_t timeBefore = stdPlatform_GetTimeMsec();
+    // Only allow trying to load data once per frame
+    if (!pMaterial->bDataLoaded && (pMaterial->frameNum != std3D_frameCount && std3D_frameCount != 1)) {
+        rdMaterial_LoadEntry_Deferred(pMaterial, 1, 1, 0);
+    }
+    uint32_t timeAfter = stdPlatform_GetTimeMsec();
+    rdMaterial_budgetMs += timeAfter - timeBefore;
+#endif
+    return 1;
+}
+
+int rdMaterial_EnsureDataForced(rdMaterial* pMaterial) {
+    if (!pMaterial) {
+        return 0;
+    }
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    // Only allow trying to load data once per frame
+    if (!pMaterial->bDataLoaded) {
+        if (!rdMaterial_LoadEntry_Deferred(pMaterial, 1, 1, 0)) {
+            rdMaterial_PurgeEntireMaterialCache();
+            rdMaterial_LoadEntry_Deferred(pMaterial, 1, 1, 0);
+        }
+    }
+#endif
+    return 1;
+}
+
+// Added
+int rdMaterial_EnsureMetadata(rdMaterial* pMaterial) {
+    if (!pMaterial) {
+        return 0;
+    }
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    if (pMaterial->bDataLoaded) {
+        return 1;
+    }
+    // Only allow trying to load data once per frame
+    if (!pMaterial->bMetadataLoaded) {
+        //int prev_std3D_frameCount = std3D_frameCount;
+        //std3D_frameCount = 1;
+        rdMaterial_LoadEntry_Deferred(pMaterial, 1, 1, 1);
+        //std3D_frameCount = prev_std3D_frameCount;
+    }
+#endif
+    return 1;
+}
+
+// Added
+void rdMaterial_OptionalFree(rdMaterial* pMaterial) {
+    if (!pMaterial) return;
+#if defined(TARGET_RETRO_HOMEBREW) && defined(RDMATERIAL_LRU_LOAD_UNLOAD) // only safe when the LRU loader can bring it back
+    //if (openjkdf2_bIsExtraLowMemoryPlatform) {
+        rdMaterial_FreeEntry(pMaterial);
+    //}
+#endif
+}
+
+// rdMaterial_Write
+extern int std3D_loadedTexturesAmt;
+// Added: cel_idx
+int rdMaterial_AddToTextureCache(rdMaterial *pMaterial, rdTexture *texture, int mipmap_level, int no_alpha, int cel_idx)
+{
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    //if (pMaterial->bDataLoaded) {
+        rdMaterial_UpdateFrameCount(pMaterial);
+    //}
+#endif
+    tVBuffer* mipmap = texture->texture_struct[mipmap_level];
+#ifdef TARGET_GAMECUBE
+#endif
+
+#ifdef SDL2_RENDER
+    if (mipmap) {
+        mipmap->palette = pMaterial->palette_alloc;
+    }
+#endif
+
+    if ( no_alpha )
+    {
+        rdDDrawSurface* surface = &texture->opaqueMats[mipmap_level];
+        if (surface->texture_loaded)
+        {
+            std3D_UpdateFrameCount(surface);
+            return 1;
+        }
+#ifdef SDL2_RENDER
+#if defined(TARGET_CAN_JKGM)
+        else if (jkgm_std3D_AddToTextureCache(mipmap, surface, texture->alpha_en & 1, no_alpha, pMaterial, cel_idx))
+        {
+            //printf("rdmat Init %s %x %x\n", pMaterial->mat_fpath, surface->texture_id, std3D_loadedTexturesAmt);
+            return 1;
+        }
+#endif
+#endif
+        else if (std3D_AddToTextureCache(mipmap, surface, texture->alpha_en & 1, no_alpha))
+        {
+            //printf("rdmat Init %s %x %x\n", pMaterial->mat_fpath, surface->texture_id, std3D_loadedTexturesAmt);
+            return 1;
+        }
+        return 0;
+    }
+    else
+    {
+        rdDDrawSurface* surface = &texture->alphaMats[mipmap_level];
+        if ( surface->texture_loaded )
+        {
+            std3D_UpdateFrameCount(surface);
+            return 1;
+        }
+#ifdef SDL2_RENDER
+#if defined(TARGET_CAN_JKGM)
+        else if (jkgm_std3D_AddToTextureCache(mipmap, surface, texture->alpha_en & 1, no_alpha, pMaterial, cel_idx))
+        {
+            //printf("rdmat Init %s %x %x\n", pMaterial->mat_fpath, surface->texture_id, std3D_loadedTexturesAmt);
+            return 1;
+        }
+#endif
+#endif
+        else if (std3D_AddToTextureCache(mipmap, surface, texture->alpha_en & 1, 0))
+        {
+            //printf("rdmat Init %s %x %x\n", pMaterial->mat_fpath, surface->texture_id, std3D_loadedTexturesAmt);
+            return 1;
+        }
+        return 0;
+    }
+}
+
+// TODO verify behavior in here
+void rdMaterial_ResetCacheInfo(rdMaterial *pMaterial)
+{
+    // Added
+    if (!pMaterial) {
+        return;
+    }
+    
+    //printf("Evicting material %s\n", pMaterial->mat_full_fpath);
+#ifndef SDL2_RENDER
+    for (int i = 0; i < pMaterial->num_textures; i++)
+    {
+        if (!pMaterial->textures) {
+            break;
+        }
+        rdTexture* texIter = &pMaterial->textures[i];
+        for (int j = 0; j < texIter->num_mipmaps; j++)
+        {
+#if defined(SDL2_RENDER) || defined(TARGET_RETRO_HOMEBREW)
+            std3D_PurgeSurfaceRefs(&texIter->alphaMats[j]);
+            std3D_PurgeSurfaceRefs(&texIter->opaqueMats[j]);
+#endif
+            texIter->alphaMats[j].texture_id = 0;
+            texIter->alphaMats[j].texture_loaded = 0;
+            texIter->alphaMats[j].frameNum = 0;
+            texIter->opaqueMats[j].texture_id = 0;
+            texIter->opaqueMats[j].texture_loaded = 0;
+            texIter->opaqueMats[j].frameNum = 0;
+        }
+    }
+#endif
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+    rdMaterial_EvictData(pMaterial);
+    rdMaterial_RemoveMaterialFromCacheList(pMaterial);
+#endif
+}
+
+#if defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+
+void rdMaterial_EvictData(rdMaterial *pMaterial)
+{
+    if (!pMaterial) {
+        return;
+    }
+    if (!pMaterial->bDataLoaded) {
+        return;
+    }
+
+    for (size_t i = 0; i < pMaterial->num_textures; i++)
+    {
+        if (!pMaterial->textures) break;
+
+        rdTexture* pTex = &pMaterial->textures[i];
+
+        for (size_t j = 0; j < pTex->num_mipmaps; j++)
+        {
+            rdDDrawSurface* matIter = &pTex->alphaMats[j];
+            std3D_PurgeSurfaceRefs(matIter);
+            std3D_PurgeSurfaceRefs(&matIter[4]);
+            matIter->texture_loaded = 0;
+            matIter->frameNum = 0;
+            matIter[4].texture_loaded = 0;
+            matIter[4].frameNum = 0;
+
+            if (pTex->texture_struct[j]) {
+                printf("Evicting material %s fr %d\n", pMaterial->mat_full_fpath, rdMaterial_numCachedMaterials);
+                stdDisplay_VBufferFree(pTex->texture_struct[j]);
+                pTex->texture_struct[j] = NULL;
+            }
+        }
+    }
+
+    //
+    // Make sure there's no dangling references to any textures
+    //
+    if (pMaterial->textures) {
+        RDROID_FREE(pMaterial->textures);
+
+        // Added
+        pMaterial->textures = NULL;
+    }
+
+    if (/*(material->tex_type & 1) &&*/ pMaterial->palette_alloc) {
+        RDROID_FREE(pMaterial->palette_alloc);
+
+        // Added
+        pMaterial->palette_alloc = NULL;
+    }
+
+    for (size_t i = 0; i < pMaterial->num_texinfo; i++)
+    {
+        if (pMaterial->texinfos[i]) {
+            rdTexinfo* texinfo = pMaterial->texinfos[i];
+            
+            texinfo->texture_ptr = NULL;
+        }
+    }
+
+    pMaterial->bDataLoaded = 0;
+    //pMaterial->bMetadataLoaded = 0;
+}
+
+// Derived from https://github.com/smlu/OpenJones3D/blob/main/Libs/std/Win95/std3D.c
+void rdMaterial_UpdateFrameCount(rdMaterial *pMaterial) {
+    if (!pMaterial) {
+        return;
+    }
+
+    rdMaterial_RemoveMaterialFromCacheList(pMaterial);
+    rdMaterial_AddMaterialToCacheList(pMaterial);
+}
+
+void rdMaterial_RemoveMaterialFromCacheList(rdMaterial *pCacheMaterial) {
+    if (!pCacheMaterial) {
+        return;
+    }
+
+    if (!pCacheMaterial->frameNum) {
+        return;
+    }
+
+    if ( pCacheMaterial == rdMaterial_pFirstMatCache )
+    {
+        rdMaterial_pFirstMatCache = pCacheMaterial->pNextCachedMaterial;
+        if ( rdMaterial_pFirstMatCache )
+        {
+            rdMaterial_pFirstMatCache->pPrevCachedMaterial = NULL;
+            if ( !rdMaterial_pFirstMatCache->pNextCachedMaterial ) {
+                rdMaterial_pLastMatCache = rdMaterial_pFirstMatCache;
+            }
+        }
+        else {
+            rdMaterial_pLastMatCache = NULL;
+        }
+    }
+    else if ( pCacheMaterial == rdMaterial_pLastMatCache )
+    {
+        rdMaterial_pLastMatCache = pCacheMaterial->pPrevCachedMaterial;
+        if (pCacheMaterial->pPrevCachedMaterial)
+            pCacheMaterial->pPrevCachedMaterial->pNextCachedMaterial = NULL;
+        else
+            rdMaterial_pLastMatCache = rdMaterial_pFirstMatCache;
+    }
+    else
+    {
+        if (pCacheMaterial->pPrevCachedMaterial)
+            pCacheMaterial->pPrevCachedMaterial->pNextCachedMaterial = pCacheMaterial->pNextCachedMaterial;
+        if (pCacheMaterial->pNextCachedMaterial)
+            pCacheMaterial->pNextCachedMaterial->pPrevCachedMaterial = pCacheMaterial->pPrevCachedMaterial;
+    }
+
+    pCacheMaterial->pNextCachedMaterial = NULL;
+    pCacheMaterial->pPrevCachedMaterial = NULL;
+    pCacheMaterial->frameNum = 0;
+
+    --rdMaterial_numCachedMaterials;
+}
+
+void rdMaterial_AddMaterialToCacheList(rdMaterial *pMaterial) {
+    if (!pMaterial) {
+        return;
+    }
+
+    if (pMaterial->frameNum) {
+        return;
+    }
+
+    if ( rdMaterial_pFirstMatCache )
+    {
+        rdMaterial_pLastMatCache->pNextCachedMaterial = pMaterial;
+        pMaterial->pPrevCachedMaterial            = rdMaterial_pLastMatCache;
+        pMaterial->pNextCachedMaterial            = NULL;
+        rdMaterial_pLastMatCache                = pMaterial;
+    }
+    else
+    {
+        rdMaterial_pLastMatCache          = pMaterial;
+        rdMaterial_pFirstMatCache         = pMaterial;
+        pMaterial->pPrevCachedMaterial = NULL;
+        pMaterial->pNextCachedMaterial = NULL;
+    }
+
+    if (!std3D_frameCount) {
+        std3D_frameCount = 1;
+    }
+
+    ++rdMaterial_numCachedMaterials;
+    pMaterial->frameNum = std3D_frameCount;
+}
+
+int rdMaterial_PurgeMaterialCache()
+{
+    //printf("Purge mat... %d\n", rdMaterial_numCachedMaterials);
+
+    // TODO: maybe be gentler here and have like, a 60 frame buffer
+
+    int purgedAnything = 0;
+    int purgeLimit = 240;
+    rdMaterial* pNextCachedMaterial = NULL;
+    while (!purgedAnything) {
+        for ( rdMaterial* pCacheMaterial = rdMaterial_pFirstMatCache; pCacheMaterial; pCacheMaterial = pNextCachedMaterial )
+        {
+            pNextCachedMaterial = pCacheMaterial->pNextCachedMaterial;
+
+            if (pCacheMaterial->frameNum == std3D_frameCount || pCacheMaterial->frameNum == std3D_frameCount-1) {
+                break;
+            }
+
+            // On DSi, we can't purge the current frame nor the previous, because the previous is being rastered constantly by the hardware
+            if (pCacheMaterial->frameNum-std3D_frameCount > purgeLimit)
+            {
+                purgedAnything = 1;
+                
+                rdMaterial_ResetCacheInfo(pCacheMaterial);
+                //std3D_PurgeSurfaceRefs(pCacheMaterial);
+            }
+            else {
+                break;
+            }
+        }
+        purgeLimit -= 20;
+        if (purgeLimit <= 0) {
+            break;
+        }
+    }
+
+#ifdef TARGET_RETRO_HOMEBREW
+    if (purgedAnything) {
+        stdPlatform_PrintHeapStats();
+    }
+#endif
+
+    return purgedAnything;
+}
+
+int rdMaterial_PurgeEntireMaterialCache()
+{
+    int res = 0;
+
+    rdMaterial* pNextCachedMaterial = NULL;
+    for (rdMaterial* pCacheMaterial = rdMaterial_pFirstMatCache; pCacheMaterial; pCacheMaterial = pNextCachedMaterial)
+    {
+        pNextCachedMaterial = pCacheMaterial->pNextCachedMaterial;
+        if (pCacheMaterial->frameNum == std3D_frameCount || pCacheMaterial->frameNum == std3D_frameCount - 1)
+            continue;
+        rdMaterial_ResetCacheInfo(pCacheMaterial); // evicts + unlinks from the cache list
+        res = 1;
+    }
+
+    return res;
+}
+
+#endif // defined(RDMATERIAL_LRU_LOAD_UNLOAD)

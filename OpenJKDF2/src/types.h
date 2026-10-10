@@ -1,0 +1,4016 @@
+#ifndef TYPES_H
+#define TYPES_H
+
+#if defined(TARGET_TWL) && defined(EXPERIMENTAL_FIXED_POINT)
+//#include <nds.h>
+#define flextov16(n) ((v16)((int32_t)n.to_raw() >> (FIXED_POINT_DECIMAL_BITS-12)))
+#define flextot16(n) ((v16)((int32_t)n.to_raw() >> (FIXED_POINT_DECIMAL_BITS-4)))
+#define flextof32(n) ((int32_t)((int32_t)n.to_raw() >> (FIXED_POINT_DECIMAL_BITS-12)))
+#define f32toflex(n) (numeric::fixed<FIXED_POINT_WHOLE_BITS, FIXED_POINT_DECIMAL_BITS>::from_base(n<<(FIXED_POINT_DECIMAL_BITS-12)))
+#elif defined(TARGET_TWL) && !defined(EXPERIMENTAL_FIXED_POINT)
+#define flextov16(n) (floattov16(n))
+#define flextot16(n) (floattot16(n))
+#define flextof32(n) (floattof32(n))
+#define f32toflex(n) (f32tofloat(n))
+
+#endif
+
+#ifdef EXPERIMENTAL_FIXED_POINT
+#define flexdirect(n) (numeric::fixed<FIXED_POINT_WHOLE_BITS, FIXED_POINT_DECIMAL_BITS>::from_base(n))
+#endif
+
+#ifdef __cplusplus
+#ifdef EXPERIMENTAL_FIXED_POINT
+#include "fixed.h"
+#endif
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef MACOS
+#define GL_SILENCE_DEPRECATION
+#define AL_SILENCE_DEPRECATION
+#endif
+
+#if (defined(LINUX) || defined(TARGET_TWL)) && !defined(PLAT_MISSING_WIN32)
+#define PLAT_MISSING_WIN32
+#endif
+
+#if defined(LINUX) || defined(TARGET_TWL)
+#define FS_POSIX
+#endif
+
+#if defined(SDL2_RENDER)
+#define QUAKE_CONSOLE
+#endif
+
+// Ghidra tutorial:
+// File > Parse C Source...
+//
+// Select VisualStudio12_32.prf
+// Click second top-right button "Save profile to new name"
+// Name it JK, JKM, DW, etc
+//
+// Hit + button
+// Add this file as a header
+//
+// Add the following to the parse options:
+// -DGHIDRA_IMPORT
+//
+// For JKM:
+// -DJKM_TYPES
+//
+// For DroidWorks:
+// -DDW_TYPES
+//
+// Parse to Program and Save
+// In Data Type Manager, right click the EXE and Apply Function Data Types
+
+#ifdef GHIDRA_IMPORT
+typedef char int8_t;
+typedef unsigned char uint8_t;
+typedef short int16_t;
+typedef unsigned short uint16_t;
+typedef int int32_t;
+typedef unsigned int uint32_t;
+typedef uint32_t intptr_t;
+typedef uint32_t size_t;
+#define _SITHCOGYACC_H
+#define JK_H
+#endif
+
+#ifdef JKM_TYPES
+#define JKM_LIGHTING
+#define JKM_BONES
+#define JKM_PARAMS
+#define JKM_AI
+#define JKM_SABER
+#define JKM_DSS
+#define JKM_CAMERA
+#endif
+
+#ifdef DW_TYPES
+#define DW_LASERS
+#endif
+
+#include "types_win_enums.h"
+#include "types_enums.h"
+#include "engine_config.h"
+
+#ifdef WIN32
+#include <winsock2.h>
+#include <windows.h>
+#include <io.h>
+#endif
+
+#include <stdarg.h>
+
+#include <stdint.h>
+#include <stddef.h>
+
+// char16_t must be a real, fixed-width 16-bit type, not an alias for the
+// compiler's wchar_t (which varies in width by platform/toolchain) -- see
+// the wchar_t -> char16_t migration in CLAUDE.md.
+#ifndef __cplusplus
+typedef uint16_t char16_t;
+#endif
+
+#include "Primitives/rdRect.h"
+
+
+#if defined(JK_NO_MMAP)
+//#define RDCACHE_MAX_TRIS (0x2000)
+//#define RDCACHE_MAX_VERTICES (0x10000)
+#endif
+
+#define STD3D_MAX_VERTICES (RDCACHE_MAX_TRIS)
+#define STD3D_MAX_TRIS (RDCACHE_MAX_TRIS)
+
+// TODO find some headers for these
+#define LPDDENUMCALLBACKA void*
+#define LPDIRECTDRAW void*
+#define LPDIRECTINPUTA void*
+#define LPDIRECTPLAYLOBBYA void*
+#define LPDIRECTSOUND void*
+
+#if defined(_MSC_VER)
+#define ALIGNED_(x) __declspec(align(x))
+#else
+#if defined(__GNUC__)
+#define ALIGNED_(x) __attribute__ ((aligned(x)))
+#else
+#define ALIGNED_(x) __attribute__ ((aligned(x)))
+#endif
+#endif
+
+#if defined(_MSC_VER)
+#define PURE_FUNC //TODO
+#else
+#if defined(__GNUC__)
+#define PURE_FUNC __attribute__ ((pure))
+#else
+#define PURE_FUNC __attribute__ ((pure))
+#endif
+#endif
+
+#if defined(_MSC_VER)
+#define ALWAYS_INLINE //TODO
+#else
+#if defined(__GNUC__)
+#define ALWAYS_INLINE __attribute__ ((always_inline))
+#else
+#define ALWAYS_INLINE __attribute__ ((always_inline))
+#endif
+#endif
+
+typedef struct GUID_idk
+{
+    uint32_t a,b,c,d;
+} GUID_idk;
+
+#if defined(PLAT_MISSING_WIN32)
+#define __stdcall
+#define __cdecl
+typedef int32_t HKEY;
+typedef char* LPCSTR;
+typedef char16_t* LPCWSTR;
+typedef uint32_t DWORD;
+typedef uint32_t* LPDWORD;
+typedef uint32_t LSTATUS;
+typedef uint8_t BYTE;
+typedef uint8_t* LPBYTE;
+typedef int32_t REGSAM;
+typedef HKEY* PHKEY;
+typedef char* LPSTR;
+typedef void* LPSECURITY_ATTRIBUTES;
+typedef int32_t HRESULT;
+typedef void** LPVOID;
+typedef uint32_t HINSTANCE;
+typedef void* LPUNKNOWN;
+typedef int32_t HDC;
+typedef int BOOL;
+typedef uint32_t UINT;
+typedef void* LPPALETTEENTRY;
+typedef int* HGDIOBJ;
+typedef int32_t HFONT;
+typedef int32_t COLORREF;
+typedef int32_t HBITMAP;
+typedef void BITMAPINFO;
+typedef int32_t HANDLE;
+typedef int32_t HPALETTE;
+typedef void PALETTEENTRY;
+typedef int32_t LOGPALETTE;
+typedef void RGBQUAD;
+typedef void* LPCVOID;
+typedef uint32_t SIZE_T;
+typedef int32_t HWND;
+typedef uint16_t WORD;
+typedef int16_t SHORT;
+typedef int32_t LONG;
+typedef char16_t WCHAR;
+typedef int32_t PAINTSTRUCT;
+
+#ifndef GHIDRA_IMPORT
+typedef int8_t __int8;
+typedef int16_t __int16;
+typedef int32_t __int32;
+typedef int64_t __int64;
+#endif
+
+typedef struct GUID
+{
+    uint32_t a,b,c,d;
+} GUID;
+
+typedef GUID* LPGUID;
+typedef int32_t IUnknown;
+typedef uint16_t WPARAM;
+typedef uint32_t LRESULT;
+typedef int32_t HCURSOR;
+typedef int32_t LPARAM;
+typedef int32_t WNDPROC;
+
+typedef int32_t CONSOLE_CURSOR_INFO;
+
+typedef struct COORD
+{
+    int32_t x;
+    int32_t y;
+} COORD;
+
+typedef struct RECT
+{
+    int32_t x;
+    int32_t y;
+    int32_t w;
+    int32_t h;
+} RECT;
+
+typedef struct tagPOINT
+{
+  LONG x;
+  LONG y;
+} tagPOINT;
+
+typedef tagPOINT POINT;
+typedef POINT* LPPOINT;
+
+typedef struct tagPAINTSTRUCT
+{
+  HDC hdc;
+  BOOL fErase;
+  RECT rcPaint;
+  BOOL fRestore;
+  BOOL fIncUpdate;
+  BYTE rgbReserved[32];
+} tagPAINTSTRUCT;
+
+typedef RECT* LPRECT;
+#endif
+
+#ifdef WIN32
+typedef intptr_t stdFile_t;
+#else
+typedef intptr_t stdFile_t;
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+//typedef int64_t cog_int_t;
+//typedef double cog_flex_t;
+
+// For serialization, must stay float for save compat
+typedef float flex32_t;
+typedef double flex64_t;
+
+// For intermediate calculations, physics, rendering
+#ifdef EXPERIMENTAL_FIXED_POINT
+// Fixed point experiment
+typedef numeric::fixed<FIXED_POINT_WHOLE_BITS, FIXED_POINT_DECIMAL_BITS> flex_t;
+typedef numeric::fixed<FIXED_POINT_WHOLE_BITS, FIXED_POINT_DECIMAL_BITS> flex_d_t;
+#else
+typedef flex_t_type flex_t;
+typedef flex_d_t_type flex_d_t;
+#endif
+
+// For COG compatibility
+typedef int32_t cog_int_t;
+typedef flex32_t cog_flex_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct IDirectSound3DBuffer IDirectSound3DBuffer;
+typedef struct IDirectSoundBuffer IDirectSoundBuffer;
+typedef IDirectSoundBuffer* LPDIRECTSOUNDBUFFER;
+typedef IDirectSound3DBuffer* LPDIRECTSOUND3DBUFFER;
+
+typedef struct jkGuiElement jkGuiElement;
+typedef struct jkGuiMenu jkGuiMenu;
+typedef struct jkEpisode jkEpisode;
+typedef struct jkEpisodeEntry jkEpisodeEntry;
+
+typedef struct SithSurfaceAdjoin SithSurfaceAdjoin;
+typedef struct SithAIClass SithAIClass;
+typedef struct SithAIInstinct SithAIInstinct;
+typedef struct sithCog sithCog;
+typedef struct SithMessage SithMessage;
+typedef struct SithCogSectorLink SithCogSectorLink;
+typedef struct sithPuppet sithPuppet;
+typedef struct SithSector SithSector;
+typedef struct sithSound sithSound;
+typedef struct SithSurface SithSurface;
+typedef struct SithThing SithThing;
+typedef struct SithWorld SithWorld;
+typedef struct SithPuppetClass SithPuppetClass;
+
+typedef struct stdBitmap stdBitmap;
+typedef struct stdStrTable stdStrTable;
+typedef struct StdConffileArg StdConffileArg;
+typedef struct tHashTable tHashTable;
+typedef struct tVBuffer tVBuffer;
+typedef struct Gob Gob;
+typedef struct GobFileHandle GobFileHandle;
+typedef struct stdPalEffect stdPalEffect;
+typedef struct stdPalEffectRequest stdPalEffectRequest;
+typedef struct stdFont stdFont;
+
+typedef struct rdClipFrustum rdClipFrustum;
+typedef struct rdColormap rdColormap;
+typedef struct rdColor24 rdColor24;
+typedef struct rdDDrawSurface rdDDrawSurface;
+typedef struct rdEdge rdEdge;
+typedef struct rdActiveSpan rdActiveSpan;
+typedef struct rdActiveFace rdActiveFace;
+typedef struct rdFace rdFace;
+typedef struct rdHierarchyNode rdHierarchyNode;
+typedef struct rdKeyframe rdKeyframe;
+typedef struct rdMaterial rdMaterial;
+typedef struct rdMesh rdMesh;
+typedef struct rdParticle rdParticle;
+typedef struct rdProcEntry rdProcEntry;
+typedef struct rdPuppet rdPuppet;
+typedef struct rdSprite rdSprite;
+typedef struct rdSurface rdSurface;
+typedef struct rdThing rdThing;
+typedef struct rdTexFormat rdTexFormat;
+typedef struct rdTexFormatMin rdTexFormatMin;
+typedef struct SithCollision SithCollision;
+typedef struct sithPlayingSound sithPlayingSound;
+typedef struct sithSoundClass sithSoundClass;
+typedef struct sithAI sithAI;
+typedef struct SithAIRegisteredInstinct SithAIRegisteredInstinct;
+typedef struct SithAIControlBlock SithAIControlBlock;
+typedef struct sithActorEntry sithActorEntry;
+typedef struct SithAIInstinctState SithAIInstinctState;
+typedef struct SithCamera SithCamera;
+typedef struct SithCogScript SithCogScript;
+typedef struct SithCogSymbolTable SithCogSymbolTable;
+typedef struct sithSurfaceInfo sithSurfaceInfo;
+typedef struct sithSoundClass sithSoundClass;
+typedef struct sithSoundClassEntry sithSoundClassEntry;
+typedef struct SithEvent SithEvent;
+typedef struct SithEventParams SithEventParams;
+typedef struct SithCollideResult SithCollideResult;
+typedef struct sithCollisionSectorEntry sithCollisionSectorEntry;
+typedef struct sithMap sithMap;
+typedef struct sithMapView sithMapView;
+typedef struct SithPlayer SithPlayer;
+typedef struct SithPuppetClassSubmode SithPuppetClassSubmode;
+typedef struct stdALBuffer stdALBuffer;
+typedef struct stdMaxmodBuffer stdMaxmodBuffer;
+typedef struct stdSoundDreamcastBuffer stdSoundDreamcastBuffer;
+typedef struct stdSoundGameCubeBuffer stdSoundGameCubeBuffer;
+typedef struct stdNullSoundBuffer stdNullSoundBuffer;
+typedef struct stdFontCharset stdFontCharset;
+#ifndef RDCACHE_RENDER_NGONS
+typedef struct rdTri rdTri;
+#else
+typedef struct rdNGon rdNGon;
+typedef int rdTri; // for symbols.syms
+#endif
+typedef struct rdLine rdLine;
+typedef struct rdGeoset rdGeoset;
+typedef struct rdMeshinfo rdMeshinfo;
+typedef struct rdLight rdLight;
+typedef struct rdModel3 rdModel3;
+typedef struct rdCanvas rdCanvas;
+
+typedef struct sithGamesave_Header sithGamesave_Header;
+typedef struct jkGuiStringEntry jkGuiStringEntry;
+typedef struct jkGuiKeyboardEntry jkGuiKeyboardEntry;
+
+typedef struct videoModeStruct videoModeStruct;
+typedef struct HostServices HostServices;
+typedef struct stdDebugConsoleCmd stdDebugConsoleCmd;
+
+typedef struct Darray Darray;
+
+typedef struct stdControlKeyInfoEntry stdControlKeyInfoEntry;
+
+#if !defined(SDL2_RENDER) && defined(WIN32)
+typedef IDirectSoundBuffer stdSound_buffer_t;
+typedef IDirectSound3DBuffer stdSound_3dBuffer_t;
+#else // STDSOUND_OPENAL
+
+#ifdef STDSOUND_OPENAL
+typedef stdALBuffer stdSound_buffer_t;
+typedef stdALBuffer stdSound_3dBuffer_t;
+#endif
+
+#ifdef STDSOUND_NULL
+typedef stdNullSoundBuffer stdSound_buffer_t;
+typedef stdNullSoundBuffer stdSound_3dBuffer_t;
+#endif 
+
+#ifdef STDSOUND_MAXMOD
+typedef stdMaxmodBuffer stdSound_buffer_t;
+typedef stdMaxmodBuffer stdSound_3dBuffer_t;
+#endif 
+
+#ifdef STDSOUND_DREAMCAST
+typedef stdSoundDreamcastBuffer stdSound_buffer_t;
+typedef stdSoundDreamcastBuffer stdSound_3dBuffer_t;
+#endif
+
+#ifdef STDSOUND_GAMECUBE
+typedef stdSoundGameCubeBuffer stdSound_buffer_t;
+typedef stdSoundGameCubeBuffer stdSound_3dBuffer_t;
+#endif
+
+#endif // STDSOUND_OPENAL
+
+typedef rdModel3* (*model3Loader_t)(const char *, int);
+typedef int (*model3Unloader_t)(rdModel3*);
+typedef rdKeyframe* (*keyframeLoader_t)(const char*);
+typedef int (*keyframeUnloader_t)(rdKeyframe*);
+typedef void (*sithRender_weapRendFunc_t)(SithThing*);
+typedef int (*sithMultiHandler_t)();
+typedef int (*stdPalEffectSetPaletteFunc_t)(uint8_t*);
+typedef int (*sithAICommandFunc_t)(SithAIControlBlock *actor, SithAIInstinct *a8, SithAIInstinctState *a3, int32_t b, intptr_t a4);
+typedef int (*sithControlEnumFunc_t)(int32_t inputFuncIdx, const char *pInputFuncStr, uint32_t a3, int32_t dxKeyNum, uint32_t a5, int32_t a6, stdControlKeyInfoEntry* pControlEntry, Darray* pDarr);
+typedef int (*sithCollisionHitHandler_t)(SithThing *, SithSurface *, SithCollision *);
+typedef void (*rdPuppetTrackCallback_t)(SithThing*, int32_t, uint32_t);
+
+extern int32_t openjkdf2_bSkipWorkingDirData;
+extern int32_t openjkdf2_bIsFirstLaunch;
+extern int32_t openjkdf2_bIsRunningFromExistingInstall;
+extern int32_t openjkdf2_bOrigWasRunningFromExistingInstall;
+extern int32_t openjkdf2_bOrigWasDF2;
+extern int32_t openjkdf2_restartMode;
+extern int32_t openjkdf2_bIsLowMemoryPlatform;
+extern int32_t openjkdf2_bIsExtraLowMemoryPlatform;
+extern char openjkdf2_aRestartPath[256];
+extern int32_t Main_bMotsCompat;
+extern int32_t Main_bDwCompat;
+extern int32_t Main_bDroidWorks;
+extern int32_t Main_bDwCogVerbs;
+extern char* openjkdf2_pExecutablePath;
+
+// All the typedefs
+typedef struct rdVector2i
+{
+    int32_t x;
+    int32_t y;
+} rdVector2i;
+
+typedef struct rdVector3i
+{
+    int32_t x;
+    int32_t y;
+    int32_t z;
+} rdVector3i;
+
+typedef struct rdVector2
+{
+    flex_t x;
+    flex_t y;
+} rdVector2;
+
+typedef struct rdVector3
+{
+    flex_t x;
+    flex_t y;
+    flex_t z;
+} rdVector3;
+
+typedef struct rdVector4
+{
+    flex_t x;
+    flex_t y;
+    flex_t z;
+    flex_t w;
+} rdVector4;
+
+typedef struct rdMatrix33
+{
+    rdVector3 rvec;
+    rdVector3 lvec;
+    rdVector3 uvec;
+} rdMatrix33;
+
+typedef struct rdMatrix34
+{
+    rdVector3 rvec;
+    rdVector3 lvec;
+    rdVector3 uvec;
+    rdVector3 scale;
+} rdMatrix34;
+
+typedef struct rdMatrix44
+{
+    rdVector4 vA;
+    rdVector4 vB;
+    rdVector4 vC;
+    rdVector4 vD;
+} rdMatrix44;
+
+typedef struct rdLight
+{
+    uint32_t id;
+    int32_t type;
+    uint32_t bEnabled;
+    rdVector3 direction;
+    flex_t intensity;
+    uint32_t color;
+    
+#ifdef JKM_LIGHTING
+    flex_t angleX;
+    flex_t cosAngleX;
+    flex_t angleY;
+    flex_t cosAngleY;
+    flex_t lux;
+#else
+    uint32_t dword20;
+    uint32_t dword24;
+#endif
+    flex_t minRadius;
+    flex_t maxRadius;
+} rdLight;
+
+
+typedef struct sithCameraRenderInfo
+{
+    uint32_t field_0;
+    flex_t field_4;
+    flex_t field_8;
+    rdColormap* colormap;
+} sithCameraRenderInfo;
+
+typedef struct rdCamera
+{
+    int32_t projectType;
+    rdCanvas* pCanvas;
+    rdMatrix34 orient;
+    flex_t fov;
+    flex_t focalLength;
+    flex_t aspectRatio;
+    flex_t orthoScale;
+    rdClipFrustum *pClipFrustum;
+    void (*pfProject)(rdVector3 *, const rdVector3 *);
+    void (*pfProjectList)(rdVector3 *, const rdVector3 *, unsigned int);
+#ifdef TARGET_TWL
+    void (*fnProjectLstClip)(rdVector3 *, const rdVector3 *, unsigned int);
+#endif
+    flex_t ambientLight;
+    int32_t numLights;
+    rdLight* aLights[RDCAMERA_MAX_LIGHTS];
+    rdVector3 aLightPositions[RDCAMERA_MAX_LIGHTS];
+    flex_t attenuationMin;
+    flex_t attenuationMax;
+} rdCamera;
+
+typedef struct rdCanvas
+{
+    uint32_t bIdk;
+    tVBuffer* pVBuffer;
+    flex_t half_screen_width;
+    flex_t half_screen_height;
+    tVBuffer* d3d_vbuf;
+    uint32_t field_14;
+    int32_t xStart;
+    int32_t yStart;
+    int32_t widthMinusOne;
+    int32_t heightMinusOne;
+} rdCanvas;
+
+typedef struct rdMarkers
+{
+    flex_t marker_float[8];
+    int32_t marker_int[8];
+} rdMarkers;
+
+typedef struct rdAnimEntry
+{
+    flex_t frameNum;
+    uint32_t flags;
+    rdVector3 pos;
+    rdVector3 orientation;
+    rdVector3 vel;
+    rdVector3 angularVelocity;
+} rdAnimEntry;
+
+typedef struct rdJoint
+{
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char aMeshName[32];
+#endif
+    int32_t nodeNum;
+    uint32_t numEntries;
+    rdAnimEntry* aEntries;
+} rdJoint;
+
+typedef struct rdKeyframe
+{
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char name[32];
+#endif
+#ifdef STDHASHTABLE_CRC32_KEYS
+    uint32_t namecrc;
+#endif
+    uint32_t id;
+    uint32_t flags;
+    uint32_t numJoints;
+    uint32_t type;
+    flex_t fps;
+    uint32_t numFrames;
+    uint32_t numJoints2;
+    rdJoint* aNodes;
+    uint32_t numMarkers;
+    rdMarkers markers;
+} rdKeyframe;
+
+typedef struct rdClipFrustum
+{
+  int bClipFar;
+  flex_t nearPlane;
+  flex_t farPlane;
+  flex_t orthoLeftPlane;
+  flex_t orthoTopPlane;
+  flex_t orthoRightPlane;
+  flex_t orthoBottomPlane;
+  flex_t farTop;
+  flex_t bottom;
+  flex_t farLeft;
+  flex_t right;
+  flex_t nearTop;
+  flex_t nearLeft;
+#ifdef QOL_IMPROVEMENTS
+  //flex_t minX;
+  //flex_t minY;
+  //flex_t maxX;
+  //flex_t maxY;
+#endif
+} rdClipFrustum;
+
+
+typedef struct rdProcEntry
+{
+    uint32_t extraData;
+    int32_t type;
+    rdGeoMode_t geometryMode;
+    rdLightMode_t lightingMode;
+    rdTexMode_t textureMode;
+    uint32_t anonymous_4;
+    uint32_t anonymous_5;
+    uint32_t numVertices;
+    rdVector3* aVertices;
+    rdVector2* aTexVerticies;
+    flex_t* vertexIntensities;
+#ifdef JKM_LIGHTING
+    flex_t* paRedIntensities;
+    flex_t* paGreenIntensities;
+    flex_t* paBlueIntensities;
+#endif
+    rdMaterial* material;
+    uint32_t wallCel;
+    flex_t ambientLight;
+    flex_t light_level_static;
+    flex_t extralight;
+    rdColormap* colormap;
+    uint32_t light_flags;
+    int32_t x_min;
+    uint32_t x_max;
+    int32_t y_min;
+    uint32_t y_max;
+    flex_t z_min;
+    flex_t z_max;
+    int32_t y_min_related;
+    int32_t y_max_related;
+    uint32_t vertexColorMode;
+#ifdef TARGET_GAMECUBE
+    uint32_t gcEffect; // Added: 1 particle, 2 fully lit sprite (drawn softer/glowing), 3 sky (no fog)
+#endif
+} rdProcEntry;
+
+typedef struct v11_struct
+{
+  int32_t mipmap_related;
+  int32_t field_4;
+  rdMaterial *material;
+} v11_struct;
+
+#ifndef RDCACHE_RENDER_NGONS
+typedef struct rdTri
+{
+  int32_t v1;
+  int32_t v2;
+  int32_t v3;
+  int32_t flags;
+  rdDDrawSurface *texture; // DirectDrawSurface*
+} rdTri;
+#endif
+
+typedef struct rdUITri
+{
+  int32_t v1;
+  int32_t v2;
+  int32_t v3;
+  int32_t flags;
+  uint32_t texture; // DirectDrawSurface*
+} rdUITri;
+
+typedef struct rdLine
+{
+    int32_t v1;
+    int32_t v2;
+    int32_t flags;
+} rdLine;
+
+#ifdef RDCACHE_RENDER_NGONS
+typedef struct rdNGon
+{
+  int32_t vertIdxStart;
+  int32_t numVertices;
+  int32_t flags;
+  rdDDrawSurface *texture; // DirectDrawSurface*
+} rdNGon;
+#endif
+
+typedef float D3DVALUE;
+
+#pragma pack(push, 4)
+typedef struct D3DVERTEX_orig
+{
+  union ALIGNED_(4)
+  {
+    D3DVALUE x;
+    D3DVALUE dvX;
+  };
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE y;
+    D3DVALUE dvY;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE z;
+    D3DVALUE dvZ;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE nx;
+    D3DVALUE dvNX;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE ny;
+    D3DVALUE dvNY;
+    uint32_t color;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE nz;
+    D3DVALUE dvNZ;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE tu;
+    D3DVALUE dvTU;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE tv;
+    D3DVALUE dvTV;
+  };
+  #pragma pack(pop)
+} D3DVERTEX_orig;
+#pragma pack(pop)
+
+#pragma pack(push, 4)
+typedef struct D3DVERTEX_ext
+{
+  union ALIGNED_(4)
+  {
+    D3DVALUE x;
+    D3DVALUE dvX;
+  };
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE y;
+    D3DVALUE dvY;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE z;
+    D3DVALUE dvZ;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE nx;
+    D3DVALUE dvNX;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE ny;
+    D3DVALUE dvNY;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE nz;
+    D3DVALUE dvNZ;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE tu;
+    D3DVALUE dvTU;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    D3DVALUE tv;
+    D3DVALUE dvTV;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  uint32_t color;
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  D3DVALUE lightLevel;
+  #pragma pack(pop)
+} D3DVERTEX_ext;
+#pragma pack(pop)
+
+
+#pragma pack(push, 4)
+typedef struct D3DVERTEX_twl
+{
+  union ALIGNED_(4)
+  {
+    flex_t x;
+    flex_t dvX;
+  };
+  #pragma pack(push, 4)
+  union
+  {
+    flex_t y;
+    flex_t dvY;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    flex_t z;
+    flex_t dvZ;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    flex_t ny;
+    flex_t dvNY;
+    uint32_t color;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    flex_t tu;
+    flex_t dvTU;
+  };
+  #pragma pack(pop)
+  #pragma pack(push, 4)
+  union
+  {
+    flex_t tv;
+    flex_t dvTV;
+  };
+  #pragma pack(pop)
+  uint32_t lightLevel;
+} D3DVERTEX_twl;
+#pragma pack(pop)
+
+// TODO: Differentiate by renderer, not SDL2
+#ifdef SDL2_RENDER
+typedef D3DVERTEX_ext D3DVERTEX;
+#elif defined(TARGET_TWL)
+typedef D3DVERTEX_twl D3DVERTEX;
+#else
+typedef D3DVERTEX_orig D3DVERTEX;
+#endif
+
+/* 174 */
+typedef DWORD D3DCOLORMODEL;
+
+/* 176 */
+#pragma pack(push, 4)
+typedef struct D3DTRANSFORMCAPS
+{
+  DWORD dwSize;
+  DWORD dwCaps;
+} D3DTRANSFORMCAPS;
+#pragma pack(pop)
+
+/* 178 */
+#pragma pack(push, 4)
+typedef struct D3DLIGHTINGCAPS
+{
+  DWORD dwSize;
+  DWORD dwCaps;
+  DWORD dwLightingModel;
+  DWORD dwNumLights;
+} D3DLIGHTINGCAPS;
+#pragma pack(pop)
+
+/* 180 */
+#pragma pack(push, 4)
+typedef struct D3DPrimCaps
+{
+  DWORD dwSize;
+  DWORD dwMiscCaps;
+  DWORD dwRasterCaps;
+  DWORD dwZCmpCaps;
+  DWORD dwSrcBlendCaps;
+  DWORD dwDestBlendCaps;
+  DWORD dwAlphaCmpCaps;
+  DWORD dwShadeCaps;
+  DWORD dwTextureCaps;
+  DWORD dwTextureFilterCaps;
+  DWORD dwTextureBlendCaps;
+  DWORD dwTextureAddressCaps;
+  DWORD dwStippleWidth;
+  DWORD dwStippleHeight;
+} D3DPrimCaps;
+#pragma pack(pop)
+
+#pragma pack(push, 4)
+typedef struct D3DDeviceDesc
+{
+  DWORD dwSize;
+  DWORD dwFlags;
+  D3DCOLORMODEL dcmColorModel;
+  DWORD dwDevCaps;
+  D3DTRANSFORMCAPS dtcTransformCaps;
+  BOOL bClipping;
+  D3DLIGHTINGCAPS dlcLightingCaps;
+  D3DPrimCaps dpcLineCaps;
+  D3DPrimCaps dpcTriCaps;
+  DWORD dwDeviceRenderBitDepth;
+  DWORD dwDeviceZBufferBitDepth;
+  DWORD dwMaxBufferSize;
+  DWORD dwMaxVertexCount;
+  DWORD dwMinTextureWidth;
+  DWORD dwMinTextureHeight;
+  DWORD dwMaxTextureWidth;
+  DWORD dwMaxTextureHeight;
+  DWORD dwMinStippleWidth;
+  DWORD dwMaxStippleWidth;
+  DWORD dwMinStippleHeight;
+  DWORD dwMaxStippleHeight;
+} D3DDeviceDesc;
+#pragma pack(pop)
+
+typedef struct ALIGNED_(16) d3d_device
+{
+  uint32_t hasColorModel;
+  uint32_t dpcTri_hasperspectivecorrectttexturing;
+  uint32_t hasZBuffer;
+  uint32_t supportsColorKeyedTransparency;
+  uint32_t hasAlpha;
+  uint32_t hasAlphaFlatStippled;
+  uint32_t hasModulateAlpha;
+  uint32_t hasOnlySquareTexs;
+  char gap20[4];
+  uint32_t dcmColorModel;
+  uint32_t availableBitDepths;
+  uint32_t zCaps;
+  uint32_t dword30;
+  uint32_t dword34;
+  uint32_t dword38;
+  uint32_t dword3C;
+  uint32_t dwMaxBufferSize;
+  uint32_t dwMaxVertexCount;
+  char deviceName[128];
+  char deviceDescription[128];
+  ALIGNED_(16) D3DDeviceDesc device_desc;
+  DWORD d3d_this;
+} d3d_device;
+
+typedef struct jkgm_cache_entry_t jkgm_cache_entry_t;
+
+typedef struct rdDDrawSurface
+{
+#ifndef OPTIMIZE_AWAY_UNUSED_FIELDS
+    void* lpVtbl; // IDirectDrawSurfaceVtbl *lpVtbl
+    uint32_t direct3d_tex;
+    uint8_t surface_desc[0x6c];
+#endif
+    int texture_id;
+    int texture_loaded;
+    int is_16bit;
+    uint32_t width;
+    uint32_t height;
+
+    uint32_t textureSize;
+    uint32_t frameNum;
+    rdDDrawSurface* pPrevCachedTexture;
+    rdDDrawSurface* pNextCachedTexture;
+    
+    //uint32_t texture_area;
+    //uint32_t gpu_accel_maybe;
+    //rdDDrawSurface* tex_prev;
+    //rdDDrawSurface* tex_next;
+#ifdef SDL2_RENDER
+    uint32_t emissive_texture_id;
+    uint32_t displacement_texture_id;
+    flex_t emissive_factor[3];
+    flex_t albedo_factor[4];
+    flex_t displacement_factor;
+    void* emissive_data;
+    void* albedo_data;
+    void* displacement_data;
+    void* pDataDepthConverted;
+    int32_t skip_jkgm;
+    jkgm_cache_entry_t* cache_entry;
+#endif
+} rdDDrawSurface;
+
+typedef struct rdTexFormat
+{
+    uint32_t is16bit;
+    uint32_t bpp;
+    uint32_t r_bits;
+    uint32_t g_bits;
+    uint32_t b_bits;
+    uint32_t r_shift;
+    uint32_t g_shift;
+    uint32_t b_shift;
+    uint32_t r_bitdiff;
+    uint32_t g_bitdiff;
+    uint32_t b_bitdiff;
+    uint32_t unk_40;
+    uint32_t unk_44;
+    uint32_t unk_48;
+} rdTexFormat;
+
+#ifdef RDMATERIAL_MINIMIZE_STRUCTS
+typedef struct rdTexFormatMin
+{
+    BOOL is16bit;
+    BOOL bpp;
+} rdTexFormatMin;
+#endif // RDMATERIAL_MINIMIZE_STRUCTS
+
+typedef struct tRasterInfo
+{
+    int32_t width;
+    int32_t height;
+    uint32_t size;
+    uint32_t rowSize;
+    uint32_t rowWidth;
+#ifdef RDMATERIAL_MINIMIZE_STRUCTS
+    rdTexFormatMin format;
+#else
+    rdTexFormat format;
+#endif
+} tRasterInfo;
+
+
+typedef struct stdFontEntry
+{
+  int32_t glyphTexX;
+  int32_t glyphWidth;
+} stdFontEntry;
+
+typedef struct stdFontCharset
+{
+  stdFontCharset *previous;
+  uint16_t charFirst;
+  uint16_t charLast;
+  stdFontEntry *pEntries;
+  stdFontEntry entries;
+} stdFontCharset;
+
+typedef struct stdFont
+{
+#ifdef SITH_DEBUG_STRUCT_NAMES
+  char name[32];
+#endif
+  int32_t marginY;
+  int32_t marginX;
+  int16_t field_28;
+  int16_t monospaceW;
+  stdBitmap *pBitmap;
+  stdFontCharset charsetHead;
+} stdFont;
+
+typedef struct stdFontHeader
+{
+  int32_t magic;
+  int32_t version;
+  int32_t marginY;
+  int32_t marginX;
+  int32_t field_10;
+  int32_t numCharsets;
+  int32_t field_18;
+  int32_t field_1C;
+  int32_t field_20;
+  int32_t field_24;
+} stdFontHeader;
+
+typedef struct stdFontExtHeader
+{
+  uint16_t characterFirst;
+  uint16_t characterLast;
+} stdFontExtHeader;
+
+
+#ifdef SDL2_RENDER
+typedef struct SDL_Surface SDL_Surface;
+#endif
+
+typedef struct tVBuffer
+{
+    uint32_t lockRefCount;
+#ifndef OPTIMIZE_AWAY_UNUSED_FIELDS
+    uint32_t lockSurfRefCount;
+    uint32_t gap8;
+#endif
+    tRasterInfo format;
+    void* palette;
+    void* surface_lock_alloc;
+    uint32_t transparent_color;
+    union
+    {
+    rdDDrawSurface *ddraw_surface;
+#ifdef SDL2_RENDER
+    SDL_Surface* sdlSurface;
+#endif
+    };
+    void* ddraw_palette; // LPDIRECTDRAWPALETTE
+#ifndef OPTIMIZE_AWAY_UNUSED_FIELDS
+    uint8_t desc[0x6c];
+#endif
+#ifdef TARGET_GAMECUBE
+    uint32_t gcAram; // Added: pixels live in ARAM here (pre-tiled), surface_lock_alloc is NULL
+#endif
+} tVBuffer;
+
+typedef struct rdColor24
+{
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+} rdColor24;
+
+typedef struct rdColormap
+{
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char colormap_fname[32];
+#endif
+    uint32_t flags;
+    rdVector3 tint;
+    rdColor24 colors[256];
+    uint8_t* lightlevel;
+    void* lightlevelAlloc;
+    void* transparency;
+    void* transparencyAlloc;
+    void* dword340;
+    void* dword344;
+    void* rgb16Alloc;
+    void* dword34C;
+} rdColormap;
+
+typedef struct rdColormapHeader
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t flags;
+    flex32_t tint[3];
+    uint32_t field_18;
+    uint32_t field_1C;
+    uint32_t field_20;
+    uint32_t field_24;
+    uint32_t field_28;
+    uint32_t field_2C;
+    uint32_t field_30;
+    uint32_t field_34;
+    uint32_t field_38;
+    uint32_t field_3C;
+} rdColormapHeader;
+
+
+typedef struct rdTexture
+{
+    uint32_t alpha_en;
+    uint32_t unk_0c;
+    uint32_t color_transparent;
+    uint32_t width_bitcnt;
+    uint32_t width_minus_1;
+    uint32_t height_minus_1;
+    uint32_t num_mipmaps;
+    tVBuffer *texture_struct[4];
+    rdDDrawSurface alphaMats[4];
+    rdDDrawSurface opaqueMats[4];
+#ifdef SDL2_RENDER
+    int32_t has_jkgm_override;
+#endif
+} rdTexture;
+
+typedef struct rdTextureHeader
+{
+    uint32_t width;
+    uint32_t height;
+    uint32_t alpha_en;
+    uint32_t unk_0c;
+    uint32_t unk_10;
+    uint32_t num_mipmaps;
+} rdTextureHeader;
+
+typedef struct rdTexinfoExtHeader
+{
+    uint32_t unk_00;
+    uint32_t height;
+    uint32_t alpha_en;
+    uint32_t unk_0c;
+} rdTexinfoExtHeader;
+
+typedef struct rdTexinfoHeader
+{
+    uint32_t texture_type;
+    uint32_t solidColor;
+    uint32_t field_8;
+    uint32_t field_C;
+    uint32_t field_10;
+    uint32_t field_14;
+} rdTexinfoHeader;
+
+typedef struct rdTexinfo
+{
+    rdTexinfoHeader header;
+    uint32_t texext_unk00;
+    rdTexture *texture_ptr;
+} rdTexinfo;
+
+typedef struct rdMaterialHeader
+{
+    uint8_t magic[4];
+    uint32_t revision;
+    uint32_t type;
+    uint32_t num_texinfo;
+    uint32_t num_textures;
+    rdTexFormat texFormat;
+} rdMaterialHeader;
+
+typedef struct rdMaterial
+{
+    uint32_t tex_type;
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char mat_fpath[32];
+#endif
+#if defined(SDL2_RENDER) || defined(RDMATERIAL_LRU_LOAD_UNLOAD)
+#ifndef SITH_DEBUG_STRUCT_NAMES
+    union {
+#endif
+    char mat_full_fpath[128];
+#ifndef SITH_DEBUG_STRUCT_NAMES
+    char mat_fpath[32];
+    };
+#endif
+#endif
+    uint32_t id;
+#ifdef RDMATERIAL_MINIMIZE_STRUCTS
+    rdTexFormatMin texFormat;
+#else
+    rdTexFormat texFormat;
+#endif
+    rdColor24 *palette_alloc;
+    uint32_t num_texinfo;
+    uint32_t curCelNum;
+    rdTexinfo *texinfos[RDMATERIAL_MAX_TEXINFOS];
+    uint32_t num_textures;
+    rdTexture *textures;
+#ifdef RDMATERIAL_LRU_LOAD_UNLOAD
+    uint16_t bDataLoaded;
+    uint16_t bMetadataLoaded; 
+    int frameNum;
+    rdMaterial* pPrevCachedMaterial;
+    rdMaterial* pNextCachedMaterial;
+#endif
+} rdMaterial;
+
+struct sithPuppet
+{
+    int32_t field_0;
+    int32_t field_4;
+    int32_t majorMode;
+    int32_t currentAnimation;
+    SithPuppetClassSubmode* playingAnim;
+    int32_t otherTrack;
+    int32_t field_18;
+    int32_t currentTrack;
+    int32_t animStartedMs;
+};
+
+typedef struct SithPuppetClassSubmode
+{
+    rdKeyframe* keyframe;
+    uint32_t flags;
+    uint32_t lowPri;
+    uint32_t highPri;
+} SithPuppetClassSubmode;
+
+typedef struct sithAnimclassMode
+{
+#ifdef JKM_TYPES
+    SithPuppetClassSubmode keyframe[45];
+#else
+    SithPuppetClassSubmode keyframe[43];
+#endif
+} sithAnimclassMode;
+
+typedef struct SithPuppetClass
+{
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char name[32];
+#endif
+#ifdef STDHASHTABLE_CRC32_KEYS
+    uint32_t namecrc;
+#endif
+    sithAnimclassMode modes[6];
+    int32_t aJoints[10];
+} SithPuppetClass;
+
+typedef struct SithSurfaceAdjoin
+{
+    uint32_t flags;
+    SithSector* sector;
+    SithSurface* surface;
+    SithSurfaceAdjoin *mirror;
+    SithSurfaceAdjoin *next;
+    uint32_t field_14;
+    flex_t dist;
+#ifndef OPTIMIZE_AWAY_UNUSED_FIELDS
+    rdVector3 field_1C;
+#endif
+} SithSurfaceAdjoin;
+
+#pragma pack(push, 4)
+typedef struct SithCamera
+{
+    uint32_t type;
+    uint32_t dword4;
+    flex_t fov;
+    flex_t aspectRatio;
+    SithThing* pPrimaryFocusThing;
+    SithThing* pSecondaryFocusThing;
+    SithSector* sector;
+    rdVector3 offset;
+#ifndef OPTIMIZE_AWAY_UNUSED_FIELDS
+    rdVector3 vecUnknown1;
+#endif
+    rdMatrix34 orient;
+    rdVector3 lookPos;
+    rdVector3 lookPYR;
+    rdCamera rdCamera;
+#ifdef JKM_CAMERA
+    int32_t bZoomed;
+    flex_t zoomScale;
+    flex_t invZoomScale;
+    flex_t zoomFov;
+    flex_t zoomSpeed;
+#ifdef QOL_IMPROVEMENTS
+    flex_t zoomScaleOrig;
+#endif
+#endif
+} SithCamera;
+#pragma pack(pop)
+
+typedef struct SithEventParams SithEventParams; 
+typedef struct SithEvent SithEvent;
+
+typedef int (*sithEventHandler_t)(int32_t, SithEventParams*);
+
+typedef struct SithEventParams
+{
+    int32_t idx;
+    int32_t timerIdx;
+    flex_t field_10;
+    flex_t field_14;
+} SithEventParams;
+
+typedef struct SithEvent
+{
+    uint32_t msecEventTime;
+    int32_t taskNum;
+    SithEventParams params;
+    SithEvent* pNextEvent;
+} SithEvent;
+
+typedef struct SithEventTask
+{
+    sithEventHandler_t pfProcess;
+    uint32_t startMode;
+    uint32_t rate;
+    uint32_t msecLastIntervalTime;
+    uint32_t field_10;
+} SithEventTask;
+
+
+typedef struct sithPlayingSound
+{
+    stdSound_buffer_t* pSoundBuf;
+    stdSound_buffer_t* p3DSoundObj;
+    sithSound* sound;
+    int32_t flags;
+    int32_t idx;
+    flex_t vol_2;
+    flex_t anonymous_5;
+    flex_t maxPosition;
+    flex_t anonymous_7;
+    flex_t volumeVelocity;
+    flex_t volume;
+    flex_t pitch;
+    flex_t pitchVel;
+    flex_t nextPitch;
+    flex_t distance;
+    rdVector3 posRelative;
+    SithThing* thing;
+    rdVector3 pos;
+    int32_t refid;
+} sithPlayingSound;
+
+typedef struct sithSound
+{
+    char sound_fname[32];
+    int32_t id;
+    int32_t isLoaded;
+    uint32_t bufferBytes;
+    uint32_t sampleRate;
+    int32_t bitsPerSample;
+    int32_t bStereo; // stdSound_buffer_t*
+    uint32_t sound_len;
+    int32_t seekOffset;
+    int32_t field_40;
+    int32_t infoLoaded;
+    stdSound_buffer_t* dsoundBuffer2; // stdSound_buffer_t*
+#ifdef TARGET_GAMECUBE
+    uint32_t gcAram;      // Added: DSP-ADPCM copy in ARAM (gcSndBank), 0 = play from the WAV
+    uint32_t gcAramBytes;
+#endif
+} sithSound;
+
+typedef int (*sithControl_handler_t)(SithThing*, flex_t);
+
+typedef void (*sithSaveHandler_t)();
+
+typedef struct sithGamesave_Header
+{
+    int32_t version;
+    char episodeName[128];
+    char jklName[128];
+    flex32_t playerHealth;
+    flex32_t playerMaxHealth;
+    flex32_t binAmts[200];
+    char16_t saveName[256];
+} sithGamesave_Header;
+
+typedef struct SithOverlayMapConfig
+{
+    int32_t numArr;
+    flex_t *unkArr;
+    int32_t *paColors;
+    int32_t playerColor;
+    int32_t playerLineColor;
+    int32_t actorColor;
+    int32_t actorLineColor;
+    int32_t itemColor;
+    int32_t weaponColor;
+    int32_t otherColor;
+    int32_t bRotateOverlayMap;
+    int32_t aTeamColors[5];
+} SithOverlayMapConfig;
+
+typedef struct sithMapView
+{
+    SithOverlayMapConfig config;
+    SithWorld *world;
+} sithMapView;
+
+// Active edge in the software rasterizer's active-edge table (AET).
+// Layout reverse-engineered from JK.EXE rdActive (0x58 bytes; all offsets are JK.EXE, not
+// Grim — Grim is a colored-lighting build with shifted layout). The interpolants at
+// +0x10..+0x47 are (value, per-scanline-delta) pairs: the family Setup*Edge callback seeds
+// them and pfnAdvance steps value += delta once per scanline. The i/di and sortX/dSortX
+// pairs are confirmed literally in JK rdAFRaster_Advance{Left,Right}EdgeNGonLW; the tex/z
+// value slots are confirmed from BuildSpans reads and their deltas follow the same pattern
+// (to be nailed down by the textured/Z advance fns in P3). Which of the tex slots (affine
+// u/v vs perspective uPersp/vPersp) is live depends on the raster mode.
+typedef struct rdEdge
+{
+    int32_t  leftOrRightFlag;  // +0x00  0 -> face right-edge slot (+0x1ec); else left-edge slot (+0x1e8)
+    void*    pFace;            // +0x04  active face being scanned (aActiveFaces element)
+    int32_t  yStart;          // +0x08  first scanline this edge is active on
+    int32_t  numLines;        // +0x0C  scanline count (edge height)
+    flex_t   i;               // +0x10  light intensity at current scanline (also span-sort key)
+    flex_t   di;              // +0x14   per-scanline delta
+    flex_t   u;               // +0x18  affine texture U
+    flex_t   du;              // +0x1C   per-scanline delta
+    flex_t   v;               // +0x20  affine texture V
+    flex_t   dv;              // +0x24   per-scanline delta
+    int32_t  sortX;           // +0x28  current X in 16.16 fixed; AET sort key
+    int32_t  dSortX;          // +0x2C   per-scanline delta (1/slope in 16.16)
+    int32_t  uPersp;          // +0x30  perspective texture U numerator (16.16)
+    int32_t  duPersp;         // +0x34   per-scanline delta
+    int32_t  vPersp;          // +0x38  perspective texture V numerator (16.16)
+    int32_t  dvPersp;         // +0x3C   per-scanline delta
+    int32_t  z;               // +0x40  depth/fog (16.16)
+    int32_t  dz;              // +0x44   per-scanline delta
+    void (*pfnAdvance)(struct rdEdge*); // +0x48  per-scanline edge advance
+    rdEdge*  prev;             // +0x4C  AET prev
+    rdEdge*  next;             // +0x50  AET next (also new-edge bucket next during BuildEdges)
+    rdEdge*  nextRemove;       // +0x54  remove-bucket singly-linked next
+} rdEdge;
+
+// One horizontal span emitted by rdActive_BuildSpans and drawn by the face's
+// pfnDrawSpan. Stride 0x2c in JK.EXE (aActiveSpans, engine-internal so JK==Grim); this
+// reimplementation adds two trailing perspective fields (uOverZ/dOneOverZ family — see
+// below), so the OpenJKDF2 stride is larger. The texture-coordinate slots are mode-dependent:
+//   - affine (AT) texmap: u=U-start, du=U-gradient, v=V-start, dv=V-gradient (16.16 fixed).
+//   - perspective (IT) texmap: u=U/Z-start, du=U/Z-gradient, v=V/Z-start, dv=V/Z-gradient
+//     (float bits), plus oneOverZ/dOneOverZ; the sampler divides U/Z by 1/Z per pixel.
+//   - flat shading (solid): the packed color is stashed at u.
+// z/dz carry the per-pixel gouraud intensity (lightingMode 3) in all modes.
+typedef struct rdActiveSpan
+{
+    int32_t xStart;                 // +0x00  screen X (sortX >> 16)
+    int32_t width;                  // +0x04  pixel count
+    int32_t y;                      // +0x08  scanline (yCurScanLine)
+    int32_t u;                      // +0x0C  tex U start (AT: 16.16; IT: U/Z float bits) / flat color
+    int32_t du;                     // +0x10  tex U gradient (AT: 16.16; IT: U/Z float bits)
+    int32_t v;                      // +0x14  tex V start (AT: 16.16; IT: V/Z float bits)
+    int32_t dv;                     // +0x18  tex V gradient (AT: 16.16; IT: V/Z float bits)
+    int32_t i;                      // +0x1C  light intensity start (float bits)
+    int32_t z;                      // +0x20  depth/fog / gouraud intensity start (16.16)
+    int32_t dz;                     // +0x24  depth/fog / gouraud intensity gradient (16.16)
+    // Added (non-JK): perspective (IT) 1/Z, interpolated linearly in screen space and used as
+    // the per-pixel divisor. JK derives 1/Z from face-constant screen gradients instead; this
+    // reimplementation carries it per-span so the affine and perspective span math share shape.
+    flex_t   oneOverZ;              //         perspective 1/Z start (float)
+    flex_t   dOneOverZ;             //         perspective 1/Z gradient (float)
+    struct rdActiveSpan* pNextSpan; //         next span in this face's per-frame list
+} rdActiveSpan;
+
+// A face admitted to the active-face pool by rdActive_AddActiveFace. Stride 0x200 (JK
+// offsets; Grim's colored-lighting build is 0x204). Most of the 0x04..0x183 region is
+// per-face interpolation setup written by the rdAFRaster Setup*NGon family (ported in a
+// later phase) and is left reserved here. Only the fields the span builder itself
+// touches are named.
+typedef struct rdActiveFace
+{
+    rdProcEntry* pProcEntry;                // +0x000  source proc face (AddActiveFace arg)
+    uint8_t   reserved_004[0x184 - 0x004];  // +0x004  Setup*NGon interpolation base state
+    flex_t    dIntensity;                   // +0x184  per-pixel light gradient (float)
+    uint32_t  reserved_188;                 // +0x188
+    flex_t    dU;                           // +0x18C  affine texture U gradient (float)
+    uint32_t  reserved_190;                 // +0x190
+    flex_t    dV;                           // +0x194  affine texture V gradient (float)
+    uint32_t  reserved_198;                 // +0x198
+    int32_t   dIntensityFixed;              // +0x19C  per-pixel light gradient (16.16, from dIntensity)
+    int32_t   uRoundBias;                   // +0x1A0  affine tex U round bias (0x8000 or 0x7fff by grad sign)
+    int32_t   vRoundBias;                   // +0x1A4  affine tex V round bias
+    uint8_t   reserved_1a8[0x1B4 - 0x1A8];  // +0x1A8  (lit/gouraud scaled gradients, later phases)
+    void (*pfnDrawSpan)(struct rdActiveFace*); // +0x1B4  flush callback (draws pFirstSpan list)
+    rdActiveSpan* pFirstSpan;               // +0x1B8  per-frame span list head
+    rdActiveSpan* pLastSpan;                // +0x1BC  per-frame span list tail
+    int32_t   shift;                        // +0x1C0  affine tex mip level (0-3); also u/v coord right-shift
+    void*     pTexels;                      // +0x1C4  selected mip's texel base (surface_lock_alloc)
+    int32_t   vShift;                       // +0x1C8  texel row shift = log2(mipWidth) = width_bitcnt - mip
+    int32_t   texFormatKey;                 // +0x1CC  texel-size / sampler-variant selector (JK texture+0x18)
+    uint32_t  color;                        // +0x1D0  flat color / base value
+    uint32_t  uMask;                        // +0x1D4  affine tex U wrap mask ((mipWidth-1) << 16)
+    uint32_t  vMask;                        // +0x1D8  affine tex V wrap mask ((mipHeight-1) << vShift)
+    uint8_t*  pLightTable;                  // +0x1DC  colormap light table: LAT = row (lightlevel+lvl*256); GAT = base
+    tVBuffer* pTexMip;                      // Added: selected mip vbuffer (locked at draw time for texels)
+    int (*pfnSetupEdge)(rdEdge*, struct rdActiveFace*, int vA, int vB); // +0x1E4  build one edge
+    rdEdge*   pLeftEdge;                     // +0x1E8  left AET edge (leftOrRightFlag != 0)
+    rdEdge*   pRightEdge;                    // +0x1EC  right AET edge (leftOrRightFlag == 0)
+    int32_t   spanStartX;                   // +0x1F0  current span start X accumulator (16.16)
+    int32_t   numEdgesActive;               // +0x1F4  live edge count (2 -> span open)
+    struct rdActiveFace* nextFace;          // +0x1F8  depth-sorted active-face list next
+    struct rdActiveFace* prevFace;          // +0x1FC  depth-sorted active-face list prev
+} rdActiveFace;
+
+typedef struct rdMeshinfo
+{
+    uint32_t numVertices;
+    int* vertexPosIdx;
+    int* vertexUVIdx;
+    rdVector3* aVertices;
+    rdVector2* aTexVerticies;
+    flex_t* paDynamicLight;
+    flex_t* intensities;
+#ifdef JKM_LIGHTING
+    flex_t* paRedIntensities;
+    flex_t* paGreenIntensities;
+    flex_t* paBlueIntensities;
+#endif
+    rdVector3* verticesOrig;
+} rdMeshinfo;
+
+typedef struct rdFace
+{
+    uint32_t num;
+    uint32_t type;
+    rdGeoMode_t geometryMode;
+    rdLightMode_t lightingMode;
+    rdTexMode_t textureMode;
+    uint32_t numVertices;
+    int* vertexPosIdx;
+    int* vertexUVIdx;
+    rdMaterial* material;
+    uint32_t wallCel;
+    rdVector2 texVertOffset;
+    flex_t extraLight;
+    rdVector3 normal;
+} rdFace;
+
+// DroidWorks rdRaycast hit record filled by rdRaycast_RayPlane/RayFace/RayMesh
+typedef struct rdRaycastHit
+{
+    rdMesh* pMesh;          // +0x00: mesh containing the best hit face
+    rdFace* pFace;          // +0x04: best hit face
+    rdVector3 worldHitPos;  // +0x08: hit point in the caller's (world) space
+    rdVector3 localHitPos;  // +0x14: hit point in mesh-local space
+    flex_t distance;        // +0x20: ray parameter t of the best hit
+    uint32_t reserved[5];   // +0x24: present in the binary record, never written field-wise
+} rdRaycastHit;
+
+typedef struct sithSurfaceInfo
+{
+    rdFace face;
+    flex_t* intensities;
+    uint32_t lastTouchedMs;
+} sithSurfaceInfo;
+
+struct rdSurface
+{
+  uint32_t index; // -14
+  uint32_t flags; // -13
+  SithThing *parent_thing; // -12
+  uint32_t signature; // -11
+  rdMaterial* material; // -10
+  SithSurface *sithSurfaceParent; // -9
+  SithSector* sector; // -8
+  rdVector2 scrollVector;
+  rdVector3 field_24;
+  uint32_t field_30;
+  uint32_t field_34;
+  uint32_t wallCel;
+  flex_t field_3C;
+  flex_t field_40;
+  flex_t field_44;
+  flex_t field_48;
+};
+
+typedef struct SithSurface
+{
+    uint32_t index;
+    uint32_t field_4;
+    SithSector* pSector;
+    SithSurfaceAdjoin* pAdjoin;
+    uint32_t flags;
+    sithSurfaceInfo surfaceInfo;
+#ifdef SITHRENDER_SPHERE_TEST_SURFACES
+    flex_t radius;
+    rdVector3 center;
+#endif
+} SithSurface;
+
+typedef int (*rdMaterialUnloader_t)(rdMaterial*);
+typedef rdMaterial* (*rdMaterialLoader_t)(const char*, int, int);
+
+typedef int (*WindowDrawHandler_t)(uint32_t);
+typedef int (*WindowHandler_t)(HWND, UINT, WPARAM, LPARAM, LRESULT *);
+
+typedef struct wm_handler
+{
+  WindowHandler_t handler;
+  int32_t exists;
+} wm_handler;
+
+typedef int (*DebugConsolePrintFunc_t)(const char*);
+typedef int (*DebugConsolePrintUniStrFunc_t)(const char16_t*);
+typedef int (*DebugConsoleCmd_t)(stdDebugConsoleCmd* cmd, const char* extra);
+
+typedef struct stdDebugConsoleCmd
+{
+    char cmdStr[32];
+    DebugConsoleCmd_t cmdFunc;
+    uint32_t extra;
+} stdDebugConsoleCmd;
+
+typedef struct jkDevLogEnt
+{
+    char16_t text[128];
+    int32_t timeMsExpiration;
+    int32_t field_104;
+    int32_t drawWidth;
+    int32_t field_10C;
+    int32_t bDrawEntry;
+} jkDevLogEnt;
+
+#ifdef PLAT_MISSING_WIN32
+typedef uint32_t MCIDEVICEID;
+#endif
+
+
+typedef struct stdDeviceParams
+{
+  int32_t field_0;
+  int32_t field_4;
+  int32_t field_8;
+  int32_t field_C;
+  int32_t field_10;
+} stdDeviceParams;
+
+typedef struct video_device
+{
+  int32_t device_active;
+  int32_t hasGUID;
+  int32_t has3DAccel;
+  int32_t hasNoGuid;
+  int32_t windowedMaybe;
+  int32_t dwVidMemTotal;
+  int32_t dwVidMemFree;
+} video_device;
+
+typedef struct StdVideoMode
+{
+  int32_t field_0;
+  flex_t widthMaybe;
+  tRasterInfo format;
+} StdVideoMode;
+
+typedef struct StdDisplayInfo
+{
+  char driverDesc[128];
+  char driverName[128];
+  video_device video_device[14];
+  GUID guid;
+  int32_t numModes;
+  StdVideoMode *StdVideoMode;
+  uint32_t gap2A0;
+  int32_t field_2A4;
+} StdDisplayInfo;
+
+typedef struct render_8bpp
+{
+  int32_t bpp;
+  int32_t rBpp;
+  int32_t width;
+  int32_t height;
+  int32_t rShift;
+  int32_t gShift;
+  int32_t bShift;
+  int32_t palBytes;
+} render_8bpp;
+
+typedef struct render_rgb
+{
+  int32_t bpp;
+  int32_t rBpp;
+  int32_t gBpp;
+  int32_t bBpp;
+  int32_t rShift;
+  int32_t gShift;
+  int32_t bShift;
+  int32_t rBytes;
+  int32_t gBytes;
+  int32_t bBytes;
+} render_rgb;
+
+typedef struct render_pair
+{
+  render_8bpp render_8bpp;
+  render_rgb render_rgb;
+  uint32_t field_48;
+  uint32_t field_4C;
+  uint32_t field_50;
+} render_pair;
+
+typedef struct jkViewSize
+{
+  int32_t xMin;
+  int32_t yMin;
+  flex_t xMax;
+  flex_t yMax;
+} jkViewSize;
+
+typedef struct videoModeStruct
+{
+  int32_t modeIdx;
+  int32_t descIdx;
+  int32_t Video_8605C8;
+  int32_t field_C;
+  int32_t field_10;
+  int32_t field_14;
+  int32_t field_18;
+  int32_t field_1C;
+  int32_t field_20;
+  int32_t field_24;
+  int32_t field_28;
+  HKEY b3DAccel;
+  uint32_t viewSizeIdx;
+  jkViewSize aViewSizes[11];
+  int32_t Video_8606A4;
+  int32_t Video_8606A8;
+#ifndef JKM_TYPES
+  int32_t geoMode;
+  int32_t lightMode;
+#else
+  int32_t lightMode;
+  int32_t geoMode;
+#endif
+  int32_t texMode;
+  HKEY Video_8606B8;
+  HKEY Video_8606BC;
+#ifdef JKM_TYPES
+  int32_t Video_motsNew1;
+#endif
+  int32_t Video_8606C0;
+} videoModeStruct;
+
+typedef struct stdConsole
+{
+    uint32_t dword0;
+    uint32_t dword4;
+    uint32_t dword8;
+    uint32_t dwordC;
+    uint32_t dword10;
+    uint32_t dword14;
+    uint32_t dword18;
+    char char1C;
+    char gap1D;
+    char field_1E;
+    char field_1F;
+    uint32_t field_20;
+    uint32_t field_24;
+    uint32_t field_28;
+    uint32_t field_2C;
+    uint32_t field_30;
+    uint32_t field_34;
+    uint32_t field_38;
+    uint32_t field_3C;
+    uint32_t field_40;
+    uint32_t field_44;
+    uint32_t field_48;
+    uint32_t field_4C;
+    uint32_t field_50;
+    uint32_t field_54;
+    uint32_t field_58;
+    uint32_t field_5C;
+    uint32_t field_60;
+    uint32_t field_64;
+    uint32_t field_68;
+    uint8_t byte6C;
+    uint8_t byte6D;
+    uint8_t byte6E;
+    uint8_t byte6F;
+    uint16_t word70;
+    uint16_t word72;
+    uint16_t word74;
+    uint8_t byte76;
+    uint8_t field_77;
+    void* buffer;
+    uint32_t field_7C;
+    uint32_t bufferLen;
+    uint32_t dword84;
+    uint32_t dword88;
+    uint32_t dword8C;
+} stdConsole;
+
+// sithCogVM
+
+typedef struct net_msg
+{
+    uint32_t timeMs;
+    uint32_t flag_maybe;
+    uint32_t field_8;
+    uint32_t field_C;
+    uint32_t timeMs2;
+    uint32_t field_14;
+    uint32_t field_18;
+    uint32_t idx;
+    uint32_t msg_size;
+    uint16_t cogMsgId;
+    uint16_t msgId;
+} net_msg;
+
+typedef struct sithCogMsg_Pair
+{
+    uint32_t idx;
+    uint32_t msgId;
+} sithCogMsg_Pair;
+
+typedef struct SithMessage
+{
+    net_msg netMsg;
+    uint32_t pktData[512];
+} SithMessage;
+
+typedef int (__cdecl *cogMsg_Handler)(SithMessage*);
+typedef void (*cogSymbolFunc_t)(sithCog *);
+
+typedef struct SithCogCallstackElement
+{
+    uint32_t pc;
+    uint32_t script_running;
+    uint32_t waketimeMs;
+    uint32_t trigId;
+} SithCogCallstackElement;
+
+#ifdef COG_COMPRESS_VAR_SIZE
+typedef struct SithCogSymbolValue
+{
+    union
+    {
+        cog_int_t data[1];
+        cog_flex_t dataAsFloat[1];
+        intptr_t dataAsPtrs[1];
+        char* dataAsName;
+        cogSymbolFunc_t dataAsFunc;
+    };
+    int16_t type;
+} SithCogSymbolValue;
+#else
+typedef struct SithCogSymbolValue
+{
+    uint32_t type;
+    union
+    {
+        cog_int_t data[3];
+        cog_flex_t dataAsFloat[3];
+        intptr_t dataAsPtrs[3];
+        char* dataAsName;
+        cogSymbolFunc_t dataAsFunc;
+    };
+} SithCogSymbolValue;
+#endif
+
+typedef struct sithCog
+{
+    SithCogScript* pScript;
+    sithCogFlags_t flags;
+    int32_t idx;
+    uint32_t script_running;
+    uint32_t execPos;
+    uint32_t msecTimerTimeout;
+    uint32_t msecPulseInterval;
+    uint32_t msecNextPulseTime;
+    uint32_t field_20;
+    uint32_t senderId;
+    uint32_t senderRef;
+    uint32_t senderType;
+    uint32_t sourceIdx;
+    uint32_t sourceType;
+    uint32_t trigId;
+    cog_flex_t params[4];
+    cog_flex_t returnValue;
+    SithCogCallstackElement callstack[4];
+    uint32_t callDepth;
+    SithCogSymbolTable* pSymbolTable;
+#ifdef COG_DYNAMIC_STACKS
+    SithCogSymbolValue* stack;
+    uint32_t stackSize;
+#else
+    SithCogSymbolValue stack[SITHCOGVM_MAX_STACKSIZE];
+#endif
+    uint32_t stackPos;
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char aName[32];
+#endif
+#ifdef JKM_TYPES
+    uint32_t unk1;
+    int32_t heapSize;
+    SithCogSymbolValue* heap;
+#endif
+#ifdef COG_HEAP_INIT_ARGS
+    char* aInitArgs; // Added: heap'd jkl init strings, freed after linking (was field_4BC[32*128])
+#else
+    char field_4BC[32*128];
+#endif
+#ifndef JKM_TYPES
+    SithCogSymbolValue* heap;
+    int32_t heapSize;
+#endif
+} sithCog;
+
+// end sithCogVm
+
+typedef struct SithCogSectorLink
+{
+    SithSector* sector;
+    sithCog* cog;
+    int32_t linkid;
+    int32_t mask;
+} SithCogSectorLink;
+
+typedef struct SithCogThingLink
+{
+    SithThing* thing;
+    int32_t signature;
+    sithCog* cog;
+    int32_t linkid;
+    int32_t mask;
+} SithCogThingLink;
+
+typedef struct SithCogSurfaceLink
+{
+    SithSurface* surface;
+    sithCog* cog;
+    int32_t linkid;
+    int32_t mask;
+} SithCogSurfaceLink;
+
+// jkEpisode
+typedef int32_t jkEpisodeTypeFlags_t;
+
+typedef struct jkEpisode
+{
+    char name[32];
+    char16_t unistr[32];
+    int32_t field_60;
+    int32_t field_64;
+    int32_t field_68;
+    int32_t field_6C;
+    int32_t field_70;
+    int32_t field_74;
+    int32_t field_78;
+    int32_t field_7C;
+    int32_t field_80;
+    int32_t field_84;
+    int32_t field_88;
+    int32_t field_8C;
+    int32_t field_90;
+    int32_t field_94;
+    int32_t field_98;
+    int32_t field_9C;
+    jkEpisodeTypeFlags_t type;
+} jkEpisode;
+
+typedef struct jkEpisodeEntry
+{
+    int32_t lineNum;
+    int32_t cdNum;
+    int32_t level;
+    int32_t type;
+    char fileName[32];
+    int32_t lightpow;
+    int32_t darkpow;
+    int32_t gotoA;
+    int32_t gotoB;
+} jkEpisodeEntry;
+
+typedef struct jkEpisodeLoad
+{
+    jkEpisodeTypeFlags_t type;
+    int32_t numSeq;
+    int32_t currentEpisodeEntryIdx;
+    jkEpisodeEntry* paEntries;
+} jkEpisodeLoad;
+//end jkEpisode
+
+// jkRes
+typedef struct HostServicesBasic
+{
+    flex_t some_float;
+    int (*messagePrint)(const char *, ...);
+    int (*statusPrint)(const char *, ...);
+    int (*warningPrint)(const char *, ...);
+    int (*errorPrint)(const char *, ...);
+    int (*debugPrint)(const char *, ...);
+    void (*assert)(const char *, const char *, int);
+    int32_t unk_0;
+    void *(*alloc)(uint32_t);
+    void (*free)(void *);
+    void *(*realloc)(void *, uint32_t);
+    uint32_t (*getTimerTick)();
+    stdFile_t (*fileOpen)(const char *, const char *);
+    int (*fileClose)(stdFile_t);
+    size_t (*fileRead)(stdFile_t, void *, size_t);
+    const char *(*fileGets)(stdFile_t, char *, size_t);
+    size_t (*fileWrite)(stdFile_t, void *, size_t);
+    int (*fileEof)(stdFile_t);
+    int (*ftell)(stdFile_t);
+    int (*fseek)(stdFile_t, int, int);
+    int (*fileSize)(stdFile_t);
+    int (*filePrintf)(stdFile_t, const char*, ...);
+    const char16_t* (*fileGetws)(stdFile_t, char16_t *, size_t);
+#ifdef STDPLATFORM_HEAP_SUGGESTIONS
+    void (*suggestHeap)(int);
+#endif
+} HostServicesBasic;
+
+typedef struct HostServices
+{
+    uint32_t some_float;
+    int (*messagePrint)(const char *, ...);
+    int (*statusPrint)(const char *, ...);
+    int (*warningPrint)(const char *, ...);
+    int (*errorPrint)(const char *, ...);
+    int (*debugPrint)(const char *, ...);
+    void (*assert)(const char *, const char *, int);
+    uint32_t unk_0;
+    void *(*alloc)(uint32_t);
+    void (*free)(void *);
+    void *(*realloc)(void *, uint32_t);
+    uint32_t (*getTimerTick)();
+    stdFile_t (*fileOpen)(const char *, const char *);
+    int (*fileClose)(stdFile_t);
+    size_t (*fileRead)(stdFile_t, void *, size_t);
+    const char *(*fileGets)(stdFile_t, char *, size_t);
+    size_t (*fileWrite)(stdFile_t, void *, size_t);
+    int (*fileEof)(stdFile_t);
+    int (*ftell)(stdFile_t);
+    int (*fseek)(stdFile_t, int, int);
+    int (*fileSize)(stdFile_t);
+    int (*filePrintf)(stdFile_t, const char*, ...);
+    const char16_t* (*fileGetws)(stdFile_t, char16_t *, size_t);
+#ifdef STDPLATFORM_HEAP_SUGGESTIONS
+    int (*suggestHeap)(int);
+#endif
+    void* (*allocHandle)(size_t);
+    void (*freeHandle)(void*);
+    void* (*reallocHandle)(void*, size_t);
+    uint32_t (*lockHandle)(uint32_t);
+    void (*unlockHandle)(uint32_t);
+} HostServices;
+
+typedef struct jkResGobDirectory
+{
+  char name[128];
+  int32_t numGobs;
+  Gob *gobs[STDGOB_MAX_GOBS];
+} jkResGobDirectory;
+
+typedef struct jkRes
+{
+    jkResGobDirectory aGobDirectories[5];
+} jkRes;
+
+typedef struct jkResFile
+{
+  int32_t bOpened;
+  char fpath[128];
+  int32_t useLowLevel;
+  stdFile_t fsHandle;
+  GobFileHandle *gobHandle;
+} jkResFile;
+
+// end jkRes
+
+
+typedef struct sithCogTrigger
+{
+    uint32_t trigId;
+    uint32_t trigPc;
+    uint32_t field_8;
+} sithCogTrigger;
+
+typedef struct cogSymbol
+{
+    int32_t type;
+    cog_int_t val;
+    cogSymbolFunc_t func;
+} cogSymbol;
+
+typedef struct SithCogSymbol
+{
+  int32_t id;
+  SithCogSymbolValue val;
+#if 0
+  int32_t symbol_type;
+  union
+  {
+    char *symbol_name;
+    cogSymbolFunc_t func;
+    cog_flex_t as_float;
+    cog_flex_t as_flex;
+    cog_int_t as_int;
+    void* as_data;
+    SithAIClass* as_aiclass;
+    rdVector3 as_vec3;
+    intptr_t as_intptrs[3];
+  };
+#endif
+  int32_t field_14;
+#ifndef COG_CRC32_SYMBOL_NAMES
+  char* pName;
+#else
+  uint32_t nameCrc;
+#endif
+} SithCogSymbol;
+
+typedef struct SithCogSymbolTable
+{
+    SithCogSymbol* aSymbols;
+    tHashTable* pHashtbl;
+    uint32_t numUsedSymbols;
+    uint32_t tableSize;
+    uint32_t firstId;
+    uint32_t unk_14;
+} SithCogSymbolTable;
+
+typedef struct SithCogSymbolRef
+{
+    int32_t type;
+    int32_t flags;
+    int32_t linkid;
+    int32_t mask;
+    int32_t hash;
+    char* desc;
+    char value[32];
+} SithCogSymbolRef;
+
+typedef struct SithCogScript
+{
+    sithCogFlags_t flags;
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char aName[32];
+#endif
+#ifdef STDHASHTABLE_CRC32_KEYS
+    uint32_t pathCrc;
+#endif
+    int32_t* pCode;
+    uint32_t codeSize;
+    SithCogSymbolTable *pSymbolTable;
+    uint32_t numHandlers;
+
+#ifdef COG_DYNAMIC_TRIGGERS
+    sithCogTrigger* aHandlers;
+#else
+    sithCogTrigger aHandlers[32];
+#endif
+
+#ifdef COG_DYNAMIC_IDK
+    SithCogSymbolRef* aSymRefs;
+#else    
+    SithCogSymbolRef aSymRefs[128];
+#endif
+    uint32_t numSymbolRefs;
+} SithCogScript;
+
+typedef struct SithAIRegisteredInstinct
+{
+#ifndef SITHAI_CRC32_INSTINCTS
+    char name[32];
+#else
+    uint32_t namecrc;
+#endif
+    sithAICommandFunc_t func;
+    int32_t param1;
+    int32_t param2;
+    int32_t param3;
+} SithAIRegisteredInstinct;
+
+typedef struct SithAIInstinct
+{
+  int32_t param1;
+  int32_t param2;
+  int32_t param3;
+  flex_t fltArg[16];
+  int32_t intArg[16];
+  sithAICommandFunc_t func;
+} SithAIInstinct;
+
+typedef struct SithAIClass
+{
+  int32_t index;
+  int32_t field_4;
+  flex_t alignment;
+  flex_t rank;
+  flex_t maxStep;
+  flex_t sightDistance;
+  flex_t heardDistance;
+  flex_t fov;
+  flex_t weakupDistance;
+  flex_t accurancy;
+  int32_t numEntries;
+  SithAIInstinct entries[16];
+#ifdef SITH_DEBUG_STRUCT_NAMES
+  char fpath[32];
+#endif
+#ifdef STDHASHTABLE_CRC32_KEYS
+    uint32_t fpathcrc;
+#endif
+} SithAIClass;
+
+#ifdef JKM_LIGHTING
+typedef struct sithArchLightMesh
+{
+    flex_t* aMono;
+    flex_t* aRed;
+    flex_t* aGreen;
+    flex_t* aBlue;
+    int32_t numVertices;
+} sithArchLightMesh;
+
+typedef struct sithArchLight
+{
+    int32_t numMeshes;
+    sithArchLightMesh* aMeshes;
+} sithArchLight;
+#endif
+
+typedef void (__cdecl *sithWorldProgressCallback_t)(flex_t);
+
+typedef struct sDwLaser tDwLaser;
+typedef struct sDwLaser sDwLaser;
+
+typedef struct SithWorld
+{
+    uint32_t level_type_maybe;
+    char map_jkl_fname[32];
+    char episodeName[32];
+    int32_t numColormaps;
+    rdColormap* colormaps;
+    int32_t numSectors;
+    SithSector* aSectors;
+    int32_t numMaterials;
+    int32_t sizeMaterials;
+    rdMaterial* aMaterials;
+    rdVector2* materials2;
+    uint32_t numModels;
+    uint32_t sizeModels;
+    rdModel3* aModels;
+    int32_t numSprites;
+    int32_t sizeSprites;
+    rdSprite* aSprites;
+    int32_t numParticles;
+    int32_t sizeParticles;
+    rdParticle* aParticles;
+    int32_t numVertices;
+    rdVector3* aVertices;
+    rdVector3* aTransformedVertices;
+    int32_t* alloc_unk98;
+    flex_t* aVertDynamicLights;
+    int32_t* alloc_unk9c;
+    int32_t numTexVertices;
+    rdVector2* aTexVerticies;
+    int32_t numSurfaces;
+    SithSurface* surfaces;
+#ifdef SITHSURFACE_POOLED_ARRAYS
+    int* paSurfaceIdxPool; // Added: pooled surface index/intensity arrays
+#endif
+    int32_t numAdjoinsLoaded;
+    int32_t numAdjoins;
+    SithSurfaceAdjoin* adjoins;
+    int32_t numThingsLoaded;
+    int32_t numThings;
+    SithThing* aThings;
+    int32_t numThingTemplates;
+    int32_t sizeThingTemplates;
+    SithThing* aThingTemplates;
+    flex_t gravity;
+    uint32_t field_D8;
+    flex_t ceilingSkyHeight;
+    flex_t horizonDistance;
+    flex_t horizontalPixelsPerRev;
+    rdVector2 horizonSkyOffset;
+    rdVector2 ceilingSkyOffset;
+    rdVector4 mipmapDistance;
+    rdVector4 distancesLOD;
+    flex_t perspectiveDistance;
+    flex_t gouradDistance;
+    SithThing* pCameraFocusThing;
+    SithThing* pLocalPlayer;
+    uint32_t field_128;
+    int32_t numSoundsLoaded;
+    int32_t numSounds;
+    sithSound* sounds;
+    int32_t numSoundClasses;
+    int32_t sizeSoundClasses;
+    sithSoundClass* aSoundClasses;
+    int32_t numCogScripts;
+    int32_t sizeCogScripts;
+    SithCogScript* aCogScripts;
+    int32_t numCogs;
+    int32_t sizeCogs;
+    sithCog* aCogs;
+    int32_t numAIClasses;
+    int32_t sizeAIClasses;
+    SithAIClass* aAIClasses;
+    int32_t numKeyframes;
+    int32_t sizeKeyframes;
+    rdKeyframe* aKeyframes;
+    int32_t numPuppetClasses;
+    int32_t sizePuppetClasses;
+    SithPuppetClass* aPuppetClasses;
+#ifdef JKM_LIGHTING
+    int32_t numArchLights;
+    //int sizeArchLights;
+    sithArchLight* aArchlights;
+#endif
+#ifdef DW_LASERS
+    int32_t numDwLasers;
+    sDwLaser* aDwLasers;
+#endif
+} SithWorld;
+
+// DroidWorks laser/beam pool entry
+typedef struct sDwLaser
+{
+    uint32_t id;             // +0x00: from dwLaser_nextId (getlaserid COG verb result)
+    SithThing* pOwnerThing;  // +0x04: beam source; NULL = free pool slot
+    SithThing* pTargetThing; // +0x08: set = straight owner->target beam; NULL = raytraced bounce beam
+    flex_t width;            // +0x0c: beam half-width
+    rdMaterial material;     // +0x10: inline solid-color material handed to rdCache proc entries
+    rdTexinfo texinfo;       // +0xc4: inline texinfo; header.solidColor = beam color index
+} tDwLaser;
+
+typedef int (*sithWorldSectionParser_t)(SithWorld*, int);
+
+typedef struct SithWorldTextSectionParseHandler
+{
+    char section_name[32];
+    sithWorldSectionParser_t funcptr;
+} SithWorldTextSectionParseHandler;
+
+
+typedef struct SithInventoryType
+{
+    uint32_t flags;
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char fpath[128];
+#else
+    char fpath[8];
+#endif
+    flex_t min;
+    flex_t max;
+    sithCog* cog;
+#ifndef DW_TYPES
+    uint32_t field_90;
+    uint32_t field_94;
+#endif
+    stdBitmap* hudBitmap;
+} SithInventoryType;
+
+typedef struct SithInventoryItem
+{
+    flex_t amount;
+    int32_t field_4;
+    int32_t state;
+    flex_t activatedTimeSecs;
+    flex_t activationDelaySecs;
+    flex_t binWait;
+} SithInventoryItem;
+
+typedef struct SithControlBinding {
+    int32_t enabled;
+    int32_t binding;
+    int32_t idk;
+} SithControlBinding;
+
+typedef struct sithMap
+{
+  int32_t numArr;
+  flex_t* unkArr;
+  int32_t* anonymous_1;
+  int32_t playerColor;
+  int32_t actorColor;
+  int32_t itemColor;
+  int32_t weaponColor;
+  int32_t otherColor;
+  int32_t teamColors[5];
+} sithMap;
+
+typedef struct rdPolyline 
+{
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char fname[32];
+#endif
+    flex_t length;
+    flex_t baseRadius;
+    flex_t tipRadius;
+    rdGeoMode_t geometryMode;
+    rdLightMode_t lightingMode;
+    rdTexMode_t textureMode;
+    rdFace face;
+    rdFace tipFace;
+    rdVector2* extraUVTipMaybe;
+    rdVector2* extraUVFaceMaybe;
+}
+rdPolyline;
+
+typedef struct rdThing
+{
+    int32_t type;
+    union
+    {
+        rdModel3* model3;
+        rdCamera* camera;
+        rdLight* light;
+        rdSprite* sprite3;
+        rdParticle* particlecloud;
+        rdPolyline* polyline;
+#ifdef GHIDRA_IMPORT
+    } containedObj;
+#else
+    };
+#endif
+    rdGeoMode_t desiredGeoMode;
+    rdLightMode_t desiredLightMode;
+    rdTexMode_t desiredTexMode;
+    rdPuppet* puppet;
+    uint32_t field_18;
+    uint32_t rdFrameNum;
+    rdMatrix34 *paJointMatrices;
+    rdVector3* hierarchyNodes2;
+    int* paJointAmputationFlags;
+    uint32_t wallCel;
+    uint32_t geosetSelect;
+    rdGeoMode_t curGeoMode;
+    rdLightMode_t curLightMode;
+    rdTexMode_t curTexMode;
+    uint32_t clippingIdk;
+    SithThing* pThing;
+} rdThing;
+
+typedef struct rdPuppetTrack
+{
+    int32_t status;
+    int32_t field_4;
+    int32_t lowPri;
+    int32_t highPri;
+    flex_t speed;
+    flex_t noise;
+    flex_t playSpeed;
+    flex_t fadeSpeed;
+    uint32_t aCurKfNodeEntryNums[64];
+    flex_t field_120;
+    flex_t field_124;
+    rdKeyframe *keyframe;
+    rdPuppetTrackCallback_t callback;
+    int32_t field_130;
+} rdPuppetTrack;
+
+typedef struct rdPuppet
+{
+    uint32_t bPaused;
+    rdThing *renderData;
+    rdPuppetTrack aTracks[4];
+} rdPuppet;
+
+typedef struct SithPlayer
+{
+#ifndef DW_TYPES
+    char16_t player_name[32];
+    char16_t multi_name[32];
+#endif
+    uint32_t flags;
+    uint32_t playerNetId;
+
+#ifdef DW_TYPES
+    SithInventoryItem aItems[32];
+    int32_t pad[0x6C];
+#else
+    SithInventoryItem aItems[200];
+#endif
+    int32_t curItemID;
+    int32_t curWeaponID;
+    int32_t curPower;
+#ifndef DW_TYPES
+    int32_t field_1354;
+#endif
+    SithThing* pLocalPlayer;
+    rdMatrix34 orient;
+    SithSector* pInSector;
+#ifndef DW_TYPES
+    uint32_t respawnMask;
+#endif
+    uint32_t palEffectsIdx1;
+    uint32_t palEffectsIdx2;
+    uint32_t teamNum;
+    int32_t numKills;
+    int32_t numKilled;
+    int32_t numSuicides;
+    int32_t score;
+    int32_t msecLastCommTime;
+} SithPlayer;
+
+typedef struct jkSaberCollide
+{
+    int32_t field_1A4;
+    flex_t damage;
+    flex_t bladeLength;
+    flex_t stunDelay;
+    uint32_t field_1B4;
+    uint32_t numDamagedThings;
+    SithThing* damagedThings[6];
+    uint32_t numDamagedSurfaces;
+    SithSurface* damagedSurfaces[6];
+} jkSaberCollide;
+
+typedef struct jkPlayerInfo
+{
+    uint32_t field_0;
+    rdThing rd_thing;
+    rdThing povModel;
+    flex_t length;
+    uint32_t field_98;
+    rdPolyline polyline;
+    rdThing polylineThing;
+    jkSaberCollide saberCollideInfo;
+    uint32_t lastSparkSpawnMs;
+#ifdef JKM_SABER
+    uint32_t bHasLastJointMat;
+    rdMatrix34 lastSaberJointMat;
+    rdMatrix34 lastSecondarySaberJointMat;
+#endif // JKM_SABER
+    SithThing* wall_sparks;
+    SithThing* blood_sparks;
+    SithThing* saber_sparks;
+    SithThing* actorThing;
+#ifdef JKM_DSS
+    uint32_t guid;
+#endif // JKM_TYPES
+    uint32_t maxTwinkles;
+    uint32_t twinkleSpawnRate;
+    uint32_t bRenderTwinkleParticle;
+    uint32_t nextTwinkleRandMs;
+    uint32_t nextTwinkleSpawnMs;
+    uint32_t numTwinkles;
+    uint32_t bHasSuperWeapon;
+    int32_t bHasSuperShields;
+    uint32_t bHasForceSurge;
+#ifdef JKM_DSS
+    int32_t jkmUnk4;
+    uint32_t jkmUnk5;
+    flex_t jkmUnk6;
+    int32_t personality;
+#endif // JKM_TYPES
+} jkPlayerInfo;
+
+typedef struct jkPlayerMpcInfo
+{
+  char16_t name[32];
+  char model[32];
+  char soundClass[32];
+#ifndef OPTIMIZE_AWAY_UNUSED_FIELDS
+  uint8_t gap80[32];
+#endif
+#ifdef JKM_PARAMS
+  int32_t unk1;
+#endif
+  char sideMat[32];
+  char tipMat[32];
+  int32_t jediRank;
+#ifdef JKM_PARAMS
+  int32_t personality;
+  sithCog* pCutsceneCog;
+#endif
+} jkPlayerMpcInfo;
+
+typedef int (*sithCollision_collisionHandler_t)(SithThing*, SithThing*, SithCollision*, int);
+typedef int (*sithCollision_searchHandler_t)(SithThing*, SithThing*);
+
+typedef struct SithCollideResult
+{
+    sithCollision_collisionHandler_t handler;
+    sithCollision_searchHandler_t pUnknownFunc;
+    uint32_t bDifferentTypHandler;
+} SithCollideResult;
+
+typedef struct SithCollision
+{
+    uint32_t type;
+    SithThing* pThingCollided;
+    SithSurface* surface;
+    rdFace* face;
+    rdMesh* pMeshCollided;
+    rdVector3 hitNorm;
+    flex_t distance;
+    uint32_t bEnumerated;
+} SithCollision;
+
+typedef struct sithCollisionSectorEntry
+{
+    SithSector* aSectors[64];
+} sithCollisionSectorEntry;
+
+typedef struct sithCollisionSearchResult
+{
+    SithCollision collisions[128];
+} sithCollisionSearchResult;
+
+
+typedef struct SithSector
+{
+    uint32_t id;
+    flex_t ambientLight;
+    flex_t extraLight;
+    rdColormap* colormap;
+    rdVector3 tint;
+    uint32_t numVertices;
+    int32_t* aVertIdxs;
+    uint32_t numSurfaces;
+    SithSurface* surfaces;
+    SithSurfaceAdjoin* adjoins;
+    SithThing* pFirstThingInSector;
+    uint32_t flags;
+    rdVector3 center;
+    rdVector3 thrust;
+    sithSound* hAmbientSound;
+    flex_t ambientSoundVolume;
+    rdVector3 collidebox_onecorner;
+    rdVector3 collidebox_othercorner;
+    rdVector3 boundingbox_onecorner;
+    rdVector3 boundingbox_othercorner;
+    flex_t radius;
+    uint32_t renderTick;
+    uint32_t clipVisited;
+    rdClipFrustum* pClipFrustum;
+#ifdef TARGET_TWL
+    uint32_t geoRenderTick;
+#endif
+} SithSector;
+
+typedef struct sithSectorEntry
+{
+    SithSector *sector;
+    SithThing *thing;
+    rdVector3 pos;
+    int32_t field_14;
+    flex_t field_18;
+} sithSectorEntry;
+
+typedef struct sithSectorAlloc
+{
+    int32_t field_0;
+    flex_t field_4[3];
+    rdVector3 field_10[3];
+#ifndef OPTIMIZE_AWAY_UNUSED_FIELDS
+    rdVector3 field_34[3];
+#endif
+    SithThing* field_58[3];
+} sithSectorAlloc;
+
+// SithThing start
+
+typedef struct SithAIInstinctState
+{
+    int32_t field_0;
+    int32_t nextUpdate;
+    flex_t param0;
+    flex_t param1;
+    flex_t param2;
+    flex_t param3;
+} SithAIInstinctState;
+
+typedef struct SithAIControlBlock
+{
+    SithThing *thing;
+    SithAIClass *pClass;
+    int32_t flags;
+    SithAIInstinctState aInstinctStates[16];
+    uint32_t numInstincts;
+    int32_t nextUpdate;
+#ifdef JKM_AI
+    SithThing* pInterest;
+#endif
+    rdVector3 goalLVec;
+    rdVector3 movePos;
+    rdVector3 moveDirection;
+    flex_t moveDistance;
+    flex_t moveSpeed;
+    SithThing* pFleeFromThing;
+    rdVector3 field_1C4;
+    SithThing* pDistractor;
+    rdVector3 field_1D4;
+    int32_t field_1E0;
+    rdVector3 attackError;
+    flex_t attackDistance;
+    int32_t field_1F4;
+    rdVector3 field_1F8;
+    int32_t field_204;
+    rdVector3 blindAimError;
+    SithThing *pMoveThing;
+    rdVector3 movepos;
+    int32_t field_224;
+    rdVector3 field_228;
+    flex_t targetDistance;
+    int32_t field_238;
+    rdVector3 field_23C;
+    int32_t field_248;
+    rdVector3 position;
+    rdVector3 orient;
+    flex_t field_264;
+    int32_t field_268;
+    int32_t field_26C;
+    int32_t mood0;
+    int32_t mood1;
+    int32_t mood2;
+#ifndef OPTIMIZE_AWAY_UNUSED_FIELDS
+    int32_t field_27C;
+    int32_t field_280;
+    int32_t field_284;
+#endif
+    int32_t field_288;
+    int32_t field_28C;
+    rdVector3 *aFrames;
+    int32_t loadedFrames;
+    int32_t sizeFrames;
+} SithAIControlBlock;
+
+typedef struct sithAIAlign
+{
+    int32_t bValid;
+    int32_t field_4;
+    flex_t field_8;
+} sithAIAlign;
+
+typedef struct SithParticleInfo
+{
+    uint32_t flags;
+    uint32_t count;
+    rdMaterial* material;
+    flex_t size;
+    flex_t growthSpeed;
+    flex_t minRadius;
+    flex_t range;
+    flex_t pitchRange;
+    flex_t yawRange;
+    flex_t rate;
+    flex_t field_28;
+    flex_t field_2C;
+    uint32_t field_30;
+    uint32_t field_34;
+    rdVector3 field_38;
+    uint32_t field_44;
+    uint32_t field_48;
+    uint32_t field_4C;
+    uint32_t field_50;
+    uint32_t field_54;
+    uint32_t field_58;
+    uint32_t field_5C;
+    uint32_t field_60;
+    uint32_t field_64;
+    uint32_t field_68;
+    uint32_t field_6C;
+    uint32_t field_70;
+    uint32_t field_74;
+    uint32_t field_78;
+    uint32_t field_7C;
+} SithParticleInfo;
+
+typedef struct SithExplosionInfo
+{
+    uint32_t flags;
+    uint32_t msecLifeLeft;
+    flex_t range;
+    flex_t force;
+    uint32_t msecBlastTime;
+    flex_t maxLight;
+    uint32_t field_18;
+    flex_t damage;
+    uint32_t damageType;
+    int32_t flashR;
+    int32_t flashG;
+    int32_t flashB;
+    SithThing* apDebries[4];
+    uint32_t field_40;
+    uint32_t field_44;
+    uint32_t field_48;
+    uint32_t field_4C;
+    uint32_t field_50;
+    uint32_t field_54;
+    uint32_t field_58;
+    uint32_t field_5C;
+    uint32_t field_60;
+    uint32_t field_64;
+    uint32_t field_68;
+    uint32_t field_6C;
+    uint32_t field_70;
+    uint32_t field_74;
+    uint32_t field_78;
+    uint32_t field_7C;
+    uint32_t field_80;
+} SithExplosionInfo;
+
+typedef struct SithBackpackItem
+{
+    int16_t binIdx;
+    int16_t field_2;
+    flex_t value;
+} SithBackpackItem;
+
+typedef struct SithItemInfo
+{
+    uint32_t flags;
+    rdVector3 position;
+    SithSector* sector;
+    flex_t secRespawnInterval;
+#ifdef JKM_PARAMS
+    flex_t respawnFactor;
+#endif
+    uint32_t msecLastTouchTime;
+    int16_t numBins;
+    int16_t field_1E;
+    SithBackpackItem contents[12];
+    uint32_t field_80;
+} SithItemInfo;
+
+typedef struct SithWeaponInfo
+{
+    sithWeaponFlags_t flags; // 00
+    uint32_t damageType; // 04
+    flex_t unk8; // 08
+    flex_t damage; // 0C
+    SithThing* pExplosionTemplate; // 10
+    SithThing* fleshHitTemplate; // 14
+    uint32_t numRicochets; // 18
+    flex_t rate; // 1C
+    flex_t minDamage; // 20
+    SithThing* trailThing; // 24
+    flex_t size; // 28
+    flex_t trailCylRadius; // 2C
+    flex_t trainRandAngle; // 30
+#ifdef JKM_PARAMS
+    SithThing* pTargetThing; // 34
+    flex_t field_38; // 38
+#endif
+    uint32_t field_3C; // 3C
+    flex_t range; // 40
+    flex_t force; // 3C
+    uint32_t field_40;
+    uint32_t field_44;
+    uint32_t field_48;
+    uint32_t field_4C;
+    uint32_t field_50;
+    uint32_t field_54;
+    uint32_t field_58;
+    uint32_t field_5C;
+    uint32_t field_60;
+    uint32_t field_64;
+    uint32_t field_68;
+    uint32_t field_6C;
+    uint32_t field_70;
+    uint32_t field_74;
+    uint32_t field_78;
+    uint32_t field_7C;
+    uint32_t field_80;
+    uint32_t field_84;
+#ifndef JKM_PARAMS
+    uint32_t field_88;
+    uint32_t field_8C;
+#endif
+} SithWeaponInfo;
+
+typedef struct SithActorInfo
+{
+    uint32_t flags;
+    flex_t health;
+    flex_t maxHealth;
+    uint32_t endurance;
+    flex_t jumpSpeed;
+    flex_t extraSpeed;
+    flex_t maxThrust;
+    flex_t maxRotVelocity;
+    SithThing* pWeaponTemplate;
+    SithThing* templateWeapon2;
+    SithThing* pExplodeTemplate;
+    rdVector3 headPYR;
+    rdVector3 eyeOffset;
+    flex_t minHeadPitch;
+    flex_t maxHeadPitch;
+    rdVector3 fireOffset;
+    rdVector3 lightOffset;
+    flex_t lightIntensity;
+    rdVector3 saberBladePos;
+    flex_t timeLeftLengthChange;
+    uint32_t field_1A8;
+    uint32_t field_1AC;
+    flex_t chance;
+    flex_t fov;
+    flex_t error;
+    uint32_t field_1BC;
+    SithPlayer *pPlayer;
+    uint32_t field_1C4;
+    uint32_t field_1C8;
+    uint32_t field_1CC;
+#ifdef JKM_TYPES
+    uint32_t unk_1D0;
+#endif
+} SithActorInfo;
+
+typedef struct SithPhysicsInfo
+{
+    uint32_t flags;
+#ifdef JKM_TYPES
+    //uint32_t unk_4;
+#endif
+    rdVector3 vel;
+    rdVector3 angularVelocity;
+    rdVector3 acceleration;
+    rdVector3 field_1F8;
+    flex_t mass;
+    flex_t height;
+    flex_t airDrag;
+    flex_t surfDrag;
+    flex_t staticDrag;
+    flex_t maxRotationVelocity;
+    flex_t maxVelocity;
+    flex_t orientSpeed;
+    flex_t buoyancy;
+    rdVector3 gravityForce;
+    rdVector3 deltaVelocity;
+    flex_t physicsRolloverFrames;
+    flex_t field_74;
+    flex_t field_78;
+} SithPhysicsInfo;
+
+typedef struct SithPathFrame
+{
+    rdVector3 pos;
+    rdVector3 rot;
+} SithPathFrame;
+
+typedef struct SithPathMoveInfo
+{
+    int32_t sizeFrames;
+    int32_t loadedFrames;
+    SithPathFrame *aFrames;
+    uint32_t flags;
+    rdVector3 vel;
+    flex_t field_1C;
+    flex_t moveVel;
+    rdMatrix34 curOrient;
+    flex_t field_54;
+    rdVector3 field_58;
+    rdVector3 moveFrameDeltaAngles;
+    rdVector3 orientation;
+} SithPathMoveInfo;
+
+typedef struct SithThing
+{
+    uint32_t flags;
+    uint32_t idx;
+    uint32_t guid;
+#ifdef JKM_PARAMS
+    uint32_t unk;
+#endif // JKM_TYPES
+    uint32_t type;
+    uint32_t moveType;
+    uint32_t controlType;
+    int32_t msecLifeLeft;
+    uint32_t timer;
+    uint32_t msecNextPulseTime;
+    uint32_t msecPulseInterval;
+    uint32_t collide;
+    flex_t moveSize;
+    flex_t collideSize;
+#ifdef JKM_PARAMS
+    flex_t treeSize;
+#endif // JKM_TYPES
+
+    // TODO split these into a struct
+    uint32_t attach_flags;
+    rdVector3 field_38;
+    sithSurfaceInfo* attachedSufaceInfo;
+    flex_t field_48;
+    rdVector3 field_4C;
+    union
+    {
+        SithThing* attachedThing;
+        SithSurface* attachedSurface;
+#ifdef GHIDRA_IMPORT
+    } attached;
+#else
+    };
+#endif
+
+
+    SithSector* sector;
+    SithThing* pNextThingInSector;
+    SithThing* pPrevThingInSector;
+    SithThing* pAttachedThing;
+    SithThing* pNextAttachedThing;
+    SithThing* pPrevAttachedThing;
+    uint32_t signature;
+    SithThing* pTemplate;
+    SithThing* pCreateThingTemplate;
+    SithThing* pParent;
+    uint32_t parentSignature;
+    rdMatrix34 orient;
+    rdVector3 position;
+    rdThing renderData;
+    rdVector3 transformedPos;
+    flex_t light;
+    flex_t lightMin;
+    int32_t renderFrame;
+    sithSoundClass* pSoundClass;
+    SithPuppetClass* pPuppetClass;
+    sithPuppet* puppet;
+    union
+    {
+        SithActorInfo actorParams;
+        SithWeaponInfo weaponParams;
+        SithItemInfo itemParams;
+        SithExplosionInfo explosionParams;
+        SithParticleInfo particleParams;
+#ifdef GHIDRA_IMPORT
+    } typeParams;
+#else
+    };
+#endif
+    union
+    {
+        SithPhysicsInfo physicsParams;
+        SithPathMoveInfo trackParams;
+#ifdef GHIDRA_IMPORT
+    } physParams;
+#else
+    };
+#endif
+    flex_t field_24C;
+    uint32_t field_250;
+    int32_t curframe;
+    uint32_t field_258;
+    int32_t goalframe;
+    uint32_t field_260;
+    flex_t waggle;
+    rdVector3 field_268;
+    SithAIClass* pClass;
+    SithAIControlBlock* actor;
+#ifdef SITH_DEBUG_STRUCT_NAMES
+    char aName[32];
+#endif
+#ifdef STDHASHTABLE_CRC32_KEYS
+    uint32_t templateNameCrc;
+#endif
+    sithCog* pCog;
+    sithCog* pCaptureCog;
+    jkPlayerInfo* playerInfo;
+    uint32_t jkFlags;
+    flex_t userval;
+#ifdef JKM_TYPES
+    int32_t idk1;
+#endif
+
+#ifdef JKM_LIGHTING
+    int32_t archlightIdx;
+#endif
+
+#ifdef QOL_IMPROVEMENTS
+    uint32_t lastAnnoyingSoundSpamMs;
+#endif
+} SithThing;
+
+typedef int (__cdecl *sithThing_handler_t)(SithThing*);
+// end SithThing
+
+typedef struct jkGuiSaveLoad_Entry
+{
+  sithGamesave_Header saveHeader;
+  char fpath[128];
+} jkGuiSaveLoad_Entry;
+
+typedef struct Darray
+{
+  void *alloc;
+  uint32_t entrySize;
+  uint32_t size;
+  int32_t total;
+  int32_t dword10;
+  int32_t bInitialized;
+} Darray;
+
+typedef void (*jkGuiDrawFunc_t)(jkGuiElement*, jkGuiMenu*, tVBuffer*, BOOL);
+typedef int (*jkGuiEventHandlerFunc_t)(jkGuiElement*, jkGuiMenu*, int32_t, int32_t);
+typedef int (*jkGuiClickHandlerFunc_t)(jkGuiElement*, jkGuiMenu*, int32_t mouseX, int32_t mouseY, BOOL);
+
+typedef struct jkGuiElementHandlers
+{
+  jkGuiEventHandlerFunc_t fnEventHandler;
+  jkGuiDrawFunc_t draw;
+  jkGuiClickHandlerFunc_t fnClickHandler;
+} jkGuiElementHandlers;
+
+typedef struct jkGuiTexInfo
+{
+  int32_t textHeight;
+  int32_t numTextEntries;
+  int32_t maxTextEntries;
+  int32_t textScrollY;
+  int32_t anonymous_18;
+  rdRect rect;
+} jkGuiTexInfo;
+
+typedef struct jkGuiElement
+{
+    int32_t type;
+    int32_t hoverId;
+    int32_t textType;
+
+// Added: Allow soft-resetting of these fields easily
+#ifdef QOL_IMPROVEMENTS
+    union
+    {
+        const void* compilerShutUp;
+        const char* origStr;
+        jkGuiStringEntry *orig_unistr;
+        const char16_t* orig_wstr;
+        int32_t origExtraInt;
+    };
+#else
+    union
+    {
+        const void* compilerShutUp;
+        const char* str;
+        jkGuiStringEntry *unistr;
+        const char16_t* wstr;
+        int32_t extraInt;
+        int32_t origExtraInt;
+    };
+#endif
+
+    union
+    {
+        int32_t selectedTextEntry;
+        int32_t boxChecked;
+        intptr_t otherDataPtr;
+    };
+    rdRect rect;
+    BOOL bIsVisible;
+    BOOL enableHover;
+
+// Added: Allow soft-resetting of these fields easily
+#ifdef QOL_IMPROVEMENTS
+    union
+    {
+        const void* compilerShutUp2;
+        const char* origHintText;
+        char16_t* orig_wHintText;
+    };
+#else
+    union
+    {
+        const void* compilerShutUp2;
+        const char* hintText;
+        char16_t* wHintText;
+    };
+#endif
+    jkGuiDrawFunc_t drawFuncOverride;
+    jkGuiClickHandlerFunc_t clickHandlerFunc;
+    union
+    {
+         int32_t* uiBitmaps;
+         int32_t oldForcePoints;
+    };
+    jkGuiTexInfo texInfo;
+    int32_t clickShortcutScancode;
+
+// Added: Allow soft-resetting of these fields easily
+#ifdef QOL_IMPROVEMENTS
+    union
+    {
+      const char* str;
+      jkGuiStringEntry *unistr;
+      const char16_t* wstr;
+      int32_t extraInt;
+    };
+    union
+    {
+        const char* hintText;
+        const char16_t* wHintText;
+    };
+
+    union
+    {
+      const char* strAlloced;
+      jkGuiStringEntry *unistrAlloced;
+      const char16_t* wstrAlloced;
+      int32_t extraIntAlloced;
+    };
+    union
+    {
+        const char* hintTextAlloced;
+        const char16_t* wHintTextAlloced;
+    };
+#endif
+
+    // Added: Allow soft-resetting auto-smol repositioning
+#ifdef JKGUI_SMOL_SCREEN
+    rdRect rectOrig;
+    BOOL bIsSmolDirty;
+    BOOL bIsOrigStored;
+#endif
+} jkGuiElement;
+
+typedef struct jkGuiStringEntry
+{
+    char16_t *str;
+    union
+    {
+        intptr_t id;
+        jkGuiKeyboardEntry* pKeyboardEntry;
+        char* c_str;
+    };
+} jkGuiStringEntry;
+
+typedef struct jkGuiMenu
+{
+  jkGuiElement *paElements;
+  int32_t clickableIdxIdk;
+  int32_t textBoxCursorColor;
+  int32_t fillColor;
+  int32_t checkboxBitmapIdx;
+#ifndef STDBITMAP_PARTIAL_LOAD
+  tVBuffer *texture;
+  uint8_t* palette;
+#else
+  stdBitmap* pBgBitmap;
+  tVBuffer* pTextureOverride;
+#endif
+  stdBitmap **ui_structs;
+  stdFont** fonts;
+  intptr_t paddings;
+  void (__cdecl *idkFunc)(jkGuiMenu *);
+  char *soundHover;
+  char *soundClick;
+  jkGuiElement *focusedElement;
+  jkGuiElement *lastMouseDownClickable;
+  jkGuiElement *lastMouseOverClickable;
+  int32_t lastClicked;
+  jkGuiElement* pReturnKeyShortcutElement;
+  jkGuiElement* pEscapeKeyShortcutElement;
+} jkGuiMenu;
+
+typedef struct stdPalEffect
+{
+    rdVector3i filter;
+    rdVector3 tint;
+    rdVector3i add;
+    flex_t fade;
+} stdPalEffect;
+
+typedef struct stdPalEffectsState
+{
+  int32_t bEnabled;
+  int32_t field_4;
+  int32_t field_8;
+  int32_t field_C;
+  int32_t field_10;
+  stdPalEffect effect;
+  int32_t bUseFilter;
+  int32_t bUseTint;
+  int32_t bUseAdd;
+  int32_t bUseFade;
+} stdPalEffectsState;
+
+typedef struct stdPalEffectRequest
+{
+  int32_t isValid;
+  int32_t idx;
+  stdPalEffect effect;
+} stdPalEffectRequest;
+
+typedef struct StdConffileArg
+{
+    char* key;
+    char* value;
+} StdConffileArg;
+
+typedef struct StdConffileEntry
+{
+    int32_t numArgs;
+#ifdef JKM_LIGHTING
+    StdConffileArg aArgs[256];
+#else
+    StdConffileArg aArgs[128];
+#endif
+} StdConffileEntry;
+
+typedef struct stdMemoryAlloc stdMemoryAlloc;
+
+typedef struct stdMemoryAlloc
+{
+    uint32_t num;
+    void* alloc;
+    uint32_t size;
+    char* filePath;
+    uint32_t lineNum;
+    stdMemoryAlloc* next;
+    stdMemoryAlloc* prev;
+    uint32_t magic;
+} stdMemoryAlloc;
+
+typedef struct tMemoryState
+{
+    uint32_t totalBytes;
+    uint32_t totalAllocs;
+    uint32_t maxBytes;
+    stdMemoryAlloc header;
+} tMemoryState;
+
+typedef struct sith_cog_parser_node sith_cog_parser_node;
+
+typedef struct sith_cog_parser_node 
+{
+    int32_t child_loop_depth;
+    int32_t parent_loop_depth;
+    sith_cog_parser_node *parent;
+    sith_cog_parser_node *child;
+    int32_t opcode;
+    int32_t value;
+    cog_flex_t vector[3];
+} sith_cog_parser_node;
+
+// jkHud
+
+typedef struct jkHudBitmap
+{
+    stdBitmap **pBitmap;
+    char *path8bpp;
+    char *path16bpp;
+} jkHudBitmap;
+
+typedef struct jkHudFont
+{
+    stdFont **pFont;
+    char *path8bpp;
+    char *path16bpp;
+#ifdef JKM_TYPES
+    char *pathS8bpp;
+    char *pathS16bpp;
+#endif // JKM_TYPES
+} jkHudFont;
+
+typedef struct jkHudMotsBitmap
+{
+    stdBitmap **pBitmap;
+    char *path8bpp;
+    char *path16bpp;
+    uint32_t unk1;
+    uint32_t unk2;
+    uint32_t unk3;
+    uint32_t unk4;
+    uint32_t unk5;
+} jkHudMotsBitmap;
+
+typedef struct jkHudMotsFont
+{
+    stdFont **pFont;
+    char *path8bpp;
+    char *path16bpp;
+} jkHudMotsFont;
+
+typedef struct jkHudTeamScore
+{
+    int32_t field_0;
+    int32_t score;
+    int32_t field_8;
+    int32_t field_C;
+} jkHudTeamScore;
+
+typedef struct jkHudPlayerScore
+{
+    char16_t playerName[32];
+    char16_t modelName[32];
+    int32_t score;
+    int32_t teamNum;
+} jkHudPlayerScore;
+
+typedef struct rdScreenPoint
+{
+    uint32_t x;
+    uint32_t y;
+    flex_t z;
+} rdScreenPoint;
+
+typedef struct jkHudInvInfo
+{
+  uint32_t field_0;
+  int32_t field_4;
+  int32_t field_8[2];
+  int32_t field_10[2];
+  int32_t field_18;
+  int32_t field_1C;
+  int32_t rend_timeout_5secs;
+  int32_t field_24;
+  int32_t field_28;
+  rdRect drawRect;
+  int32_t field_3C;
+} jkHudInvInfo;
+
+typedef struct jkHudInvScroll
+{
+    uint32_t blitX;
+    int32_t scroll;
+    int32_t maxItemRend;
+    int32_t field_C;
+    int32_t field_10;
+    int32_t rendIdx;
+} jkHudInvScroll;
+
+typedef void* DPLCONNECTION;
+
+typedef struct sith_dplay_connection
+{
+  char16_t name[128];
+  GUID guid;
+  DPLCONNECTION *connection;
+  int32_t connectionSize;
+} sith_dplay_connection;
+
+#pragma pack(push, 4)
+typedef struct jkMultiEntry
+{
+    GUID_idk guidInstance;
+    int32_t maxPlayers;
+    int32_t numPlayers;
+    char16_t serverName[32];
+    char episodeGobName[32];
+    char mapJklFname[32];
+    char16_t wPassword[32];
+    int32_t sessionFlags;
+    int32_t checksumSeed;
+    int32_t field_E0;
+    int32_t multiModeFlags;
+    int32_t tickRateMs;
+    int32_t maxRank;
+} jkMultiEntry;
+#pragma pack(pop)
+
+typedef struct jkMultiEntry2
+{
+    char16_t field_0[128];
+    char16_t field_100[128];
+    char field_200[256];
+    char field_300[256];
+} jkMultiEntry2;
+
+typedef struct jkMultiEntry3
+{
+    int32_t field_0;
+    char16_t serverName[32];
+    char episodeGobName[32];
+    char mapJklFname[128];
+    int32_t maxPlayers;
+    char16_t wPassword[32];
+    int32_t sessionFlags;
+    int32_t multiModeFlags;
+    int32_t maxRank;
+    int32_t timeLimit;
+    int32_t scoreLimit;
+    int32_t tickRateMs;
+} jkMultiEntry3;
+
+typedef struct jkMultiEntry4
+{
+    char episodeGobName[32];
+    char mapJklFname[32];
+    int32_t field_40;
+    int32_t field_44;
+    int32_t field_48;
+    int32_t field_4C;
+    int32_t field_50;
+    int32_t field_54;
+    int32_t field_58;
+    int32_t field_5C;
+    int32_t field_60;
+    int32_t field_64;
+    int32_t field_68;
+    int32_t field_6C;
+    int32_t field_70;
+    int32_t field_74;
+    int32_t field_78;
+    int32_t field_7C;
+    int32_t field_80;
+    int32_t field_84;
+    int32_t field_88;
+    int32_t field_8C;
+    int32_t field_90;
+    int32_t field_94;
+    int32_t field_98;
+    int32_t field_9C;
+    char16_t sessionName[32];
+    int32_t tickRateMs;
+} jkMultiEntry4;
+
+typedef struct stdControlKeyInfoEntry
+{
+    int32_t dxKeyNum;
+    uint32_t flags;
+    flex_t binaryAxisVal;
+} stdControlKeyInfoEntry;
+
+typedef struct stdControlKeyInfo
+{
+    uint32_t numEntries;
+    stdControlKeyInfoEntry aEntries[8];
+} stdControlKeyInfo;
+
+typedef struct stdControlJoystickEntry
+{
+    int32_t flags;
+    int32_t uMinVal;
+    int32_t uMaxVal;
+    int32_t dwXoffs;
+    int32_t dwYoffs;
+    flex_t fRangeConversion;
+} stdControlJoystickEntry;
+
+typedef struct stdControlStickEntry
+{
+    int32_t dwXpos;
+    int32_t dwYpos;
+    int32_t dwZpos;
+    int32_t dwRpos;
+    int32_t dwUpos;
+    int32_t dwVpos;
+} stdControlStickEntry;
+
+typedef struct stdControlDikStrToNum
+{
+    int32_t val;
+    const char *pStr;
+} stdControlDikStrToNum;
+
+typedef struct jkGuiMouseSubEntry
+{
+    int32_t field_0;
+    int32_t bitflag;
+    flex_t field_8;
+} jkGuiMouseSubEntry;
+
+typedef struct jkGuiMouseEntry
+{
+    int32_t dxKeyNum;
+    const char *displayStrKey;
+    int32_t inputFuncIdx;
+    int32_t flags;
+    jkGuiMouseSubEntry *pSubEnt;
+    int32_t bindIdx;
+    int32_t mouseEntryIdx;
+} jkGuiMouseEntry;
+
+typedef struct jkGuiKeyboardEntry
+{
+    int32_t inputFuncIdx;
+    int32_t axisIdx;
+    int32_t dxKeyNum;
+    int32_t field_C;
+    int32_t field_10;
+    int32_t field_14;
+} jkGuiKeyboardEntry;
+
+typedef struct jkSaberInfo
+{
+    char BM[0x20];
+    char sideMat[0x20];
+    char tipMat[0x20];
+} jkSaberInfo;
+
+typedef struct jkMultiModelInfo
+{
+    char modelFpath[0x20];
+    char sndFpath[0x20];
+} jkMultiModelInfo;
+
+typedef struct sithDplayPlayer
+{
+    char16_t waName[32];
+    int32_t field_40;
+    int32_t field_44;
+    int32_t field_48;
+    int32_t field_4C;
+    int32_t field_50;
+    int32_t field_54;
+    int32_t field_58;
+    int32_t field_5C;
+    int32_t field_60;
+    int16_t field_64;
+    int16_t field_66;
+    int32_t field_68;
+    int32_t field_6C;
+    int32_t field_70;
+    int32_t field_74;
+    int32_t field_78;
+    int32_t field_7C;
+    int32_t field_80;
+    int32_t field_84;
+    int32_t field_88;
+    int32_t field_8C;
+    int32_t dpId;
+} sithDplayPlayer;
+
+// Added: guarded like LPCWSTR above -- on real WIN32 builds <windows.h> already
+// declares LPWSTR (as wchar_t*, which is fine there since wchar_t is natively
+// 16-bit on Windows); redeclaring it here too would conflict.
+#if defined(PLAT_MISSING_WIN32)
+typedef char16_t* LPWSTR;
+#endif
+
+typedef struct DPNAME
+{
+  DWORD dwSize;
+  DWORD dwFlags;
+  union
+  {
+    LPWSTR lpszShortName;
+    LPSTR lpszShortNameA;
+  };
+  union
+  {
+    LPWSTR lpszLongName;
+    LPSTR lpszLongNameA;
+  };
+} DPNAME;
+
+typedef uint32_t DPID;
+typedef uint32_t *LPDPID;
+typedef const DPNAME *LPCDPNAME;
+
+typedef struct jkGuiControlInfoHeader
+{
+    uint32_t version;
+    char16_t wstr[64];
+} jkGuiControlInfoHeader;
+
+typedef struct jkGuiControlInfo
+{
+    jkGuiControlInfoHeader header;
+    char fpath[128];
+} jkGuiControlInfo;
+
+typedef struct jkGuiJoystickStrings
+{
+    char16_t aStrings[JOYSTICK_MAX_STRS][128];
+} jkGuiJoystickStrings;
+
+typedef struct jkGuiJoystickEntry
+{
+  int32_t dikNum;
+  const char *displayStrKey;
+  int32_t keybits;
+  int32_t inputFunc;
+  uint32_t flags;
+  stdControlKeyInfoEntry *pControlEntry;
+  int32_t dxKeyNum;
+  union {
+    int32_t binaryAxisValInt;
+    flex_t binaryAxisVal;
+  };
+} jkGuiJoystickEntry;
+
+typedef uint32_t (*sithWorld_ChecksumHandler_t)(uint32_t);
+
+typedef struct jkBubbleInfo
+{
+    SithThing* pThing;
+    flex_t radiusSquared;
+    uint32_t type;
+} jkBubbleInfo;
+
+typedef struct sSithCvar
+{
+    const char* pName;
+    const char* pNameLower;
+    void* pLinkPtr;
+    int32_t type;
+    int32_t flags;
+    union
+    {
+        intptr_t val;
+        char* pStrVal;
+        int32_t intVal;
+        int32_t boolVal;
+        flex_t flexVal;
+    };
+    union
+    {
+        intptr_t defaultVal;
+        char* pDefaultStrVal;
+        int32_t defaultIntVal;
+        int32_t defaultBoolVal;
+        flex_t defaultFlexVal;
+    };
+} tSithCvar;
+
+typedef void (*sithCvarEnumerationFn_t)(tSithCvar*);
+
+#ifdef GHIDRA_IMPORT
+#include "Win95/stdGob.h"
+#include "Engine/rdKeyframe.h"
+#include "Engine/rdCanvas.h"
+#include "Engine/sithKeyFrame.h"
+#include "Engine/sithAnimClass.h"
+#include "General/stdHashtbl.h"
+#include "General/stdStrTable.h"
+#include "General/stdFont.h"
+#include "General/stdFileUtil.h"
+#include "General/stdPcx.h"
+#include "Cog/sithCog.h"
+#include "Dss/sithMulti.h"
+
+#include "Cog/sithCog.h"
+#include "Cog/sithCogExec.h"
+#include "Cog/jkCog.h"
+#include "Cog/sithCogFunction.h"
+#include "Cog/sithCogFunctionThing.h"
+#include "Cog/sithCogFunctionPlayer.h"
+#include "Cog/sithCogFunctionAI.h"
+#include "Cog/sithCogFunctionSurface.h"
+#include "Cog/sithCogFunctionSector.h"
+#include "Cog/sithCogFunctionSound.h"
+#include "General/stdBitmap.h"
+#include "General/stdBitmapRle.h"
+#include "General/stdMath.h"
+#include "General/stdJSON.h"
+#include "Primitives/rdVector.h"
+#include "General/stdMemory.h"
+#include "General/stdColor.h"
+#include "General/stdConffile.h"
+#include "General/stdFont.h"
+#include "General/stdFnames.h"
+#include "General/stdFileUtil.h"
+#include "General/stdHashtbl.h"
+#include "General/stdString.h"
+#include "General/stdStrTable.h"
+#include "General/sithStrTable.h"
+#include "General/stdPcx.h"
+#include "General/Darray.h"
+#include "General/stdPalEffects.h"
+#include "Gui/jkGUIRend.h"
+#include "Gui/jkGUI.h"
+#include "Gui/jkGUIMain.h"
+#include "Gui/jkGUIGeneral.h"
+#include "Gui/jkGUIForce.h"
+#include "Gui/jkGUIEsc.h"
+#include "Gui/jkGUIDecision.h"
+#include "Gui/jkGUISaveLoad.h"
+#include "Gui/jkGUISingleplayer.h"
+#include "Gui/jkGUISingleTally.h"
+#include "Gui/jkGUIControlOptions.h"
+#include "Gui/jkGUIObjectives.h"
+#include "Gui/jkGUISetup.h"
+#include "Gui/jkGUIGameplay.h"
+#include "Gui/jkGUIDisplay.h"
+#include "Gui/jkGUISound.h"
+#include "Gui/jkGUIKeyboard.h"
+#include "Gui/jkGUIMouse.h"
+#include "Gui/jkGUIJoystick.h"
+#include "Gui/jkGUITitle.h"
+#include "Gui/jkGUIDialog.h"
+#include "Gui/jkGUIMultiplayer.h"
+#include "Gui/jkGUIBuildMulti.h"
+#include "Gui/jkGUIMultiTally.h"
+#include "Engine/rdroid.h"
+#include "Engine/rdActive.h"
+#include "Engine/rdKeyframe.h"
+#include "Engine/rdLight.h"
+#include "Engine/rdMaterial.h"
+#include "Raster/rdCache.h"
+#include "Engine/rdColormap.h"
+#include "Engine/rdClip.h"
+#include "Engine/rdCanvas.h"
+#include "Engine/rdPuppet.h"
+#include "Engine/rdThing.h"
+#include "Engine/sithCamera.h"
+#include "Devices/sithControl.h"
+#include "Gameplay/sithTime.h"
+#include "Main/sithMain.h"
+#include "Main/sithCommand.h"
+#include "World/sithModel.h"
+#include "Engine/sithParticle.h"
+#include "Engine/sithPhysics.h"
+#include "Engine/sithPuppet.h"
+#include "Dss/sithGamesave.h"
+#include "World/sithSprite.h"
+#include "World/sithSurface.h"
+#include "World/sithTemplate.h"
+#include "Gameplay/sithEvent.h"
+#include "Engine/sithKeyFrame.h"
+#include "Gameplay/sithOverlayMap.h"
+#include "World/sithMaterial.h"
+#include "Engine/sithRender.h"
+#include "Engine/sithRenderSky.h"
+#include "Devices/sithSound.h"
+#include "Devices/sithSoundMixer.h"
+#include "World/sithSoundClass.h"
+#include "Engine/sithAnimClass.h"
+#include "Primitives/rdModel3.h"
+#include "Primitives/rdPolyline.h"
+#include "Primitives/rdParticle.h"
+#include "Primitives/rdSprite.h"
+#include "Primitives/rdMatrix.h"
+#include "Raster/rdFace.h"
+#include "Primitives/rdMath.h"
+#include "Primitives/rdPrimit2.h"
+#include "Primitives/rdPrimit3.h"
+#include "Raster/rdRaster.h"
+#include "World/sithThing.h"
+#include "World/sithSector.h"
+#include "World/sithWeapon.h"
+#include "World/sithExplosion.h"
+#include "World/sithItem.h"
+#include "World/sithWorld.h"
+#include "Gameplay/sithInventory.h"
+#include "World/jkPlayer.h"
+#include "Gameplay/jkSaber.h"
+#include "Engine/sithCollision.h"
+#include "World/sithActor.h"
+#include "World/sithMap.h"
+#include "Engine/sithIntersect.h"
+#include "Gameplay/sithPlayerActions.h"
+#include "World/sithTrackThing.h"
+#include "Devices/sithConsole.h"
+#include "Win95/DirectX.h"
+#include "Win95/stdComm.h"
+#include "Win95/std.h"
+#include "Win95/stdGob.h"
+#include "Win95/stdMci.h"
+#include "Win95/stdGdi.h"
+#include "Platform/stdControl.h"
+#include "Win95/stdDisplay.h"
+#include "Win95/stdConsole.h"
+#include "Win95/stdSound.h"
+#include "Win95/Window.h"
+#include "Win95/Windows.h"
+#include "Platform/wuRegistry.h"
+#include "AI/sithAI.h"
+#include "AI/sithAIClass.h"
+#include "AI/sithAICmd.h"
+#include "AI/sithAIAwareness.h"
+#include "Main/jkAI.h"
+#include "Main/jkCredits.h"
+#include "Main/jkCutscene.h"
+#include "Main/jkDev.h"
+#include "Main/jkMain.h"
+#include "Main/jkSmack.h"
+#include "Main/jkGame.h"
+#include "Main/jkGob.h"
+#include "Main/jkRes.h"
+#include "Main/jkStrings.h"
+#include "Main/jkControl.h"
+#include "Main/jkEpisode.h"
+#include "Main/jkHud.h"
+#include "Main/jkHudInv.h"
+#include "Main/Main.h"
+#include "Dss/sithDSSThing.h"
+#include "Dss/sithDSS.h"
+#include "Dss/sithDSSCog.h"
+#include "Dss/jkDSS.h"
+#include "Devices/sithComm.h"
+#include "stdPlatform.h"
+#endif
+
+#include "version.h"
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // TYPES_H

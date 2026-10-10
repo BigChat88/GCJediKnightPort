@@ -1,0 +1,562 @@
+#ifdef TARGET_GAMECUBE
+#include "Platform/GameCube/gcStats.h"
+#endif
+#include "sithMain.h"
+
+#include "Main/jkGame.h"
+#include "Main/Main.h"
+#include "World/sithWorld.h"
+#include "World/jkPlayer.h"
+#include "Engine/sithCollision.h"
+#include "World/sithActor.h"
+#include "General/sithStrTable.h"
+#include "General/stdString.h"
+#include "General/stdFnames.h"
+#include "Win95/stdComm.h"
+#include "Devices/sithConsole.h"
+#include "Win95/Window.h"
+#include "AI/sithAI.h"
+#include "AI/sithAIClass.h"
+#include "AI/sithAIAwareness.h"
+#include "Gameplay/sithEvent.h"
+#include "Engine/sithRender.h"
+#include "Engine/sithCamera.h"
+#include "World/sithSprite.h"
+#include "Engine/sithParticle.h"
+#include "Engine/sithPuppet.h"
+#include "World/sithSoundClass.h"
+#include "World/sithMaterial.h"
+#include "World/sithTemplate.h"
+#include "World/sithModel.h"
+#include "World/sithSurface.h"
+#include "Devices/sithSound.h"
+#include "Devices/sithSoundMixer.h"
+#include "Gameplay/sithTime.h"
+#include "Engine/sithRender.h"
+#include "Devices/sithControl.h"
+#include "Dss/sithMulti.h"
+#include "Dss/sithGamesave.h"
+#include "World/sithWeapon.h"
+#include "World/sithSector.h"
+#include "World/jkPlayer.h"
+#include "Cog/sithCog.h"
+#include "Devices/sithComm.h"
+#include "stdPlatform.h"
+#include "jk.h"
+
+#ifdef FIXED_TIMESTEP_PHYS
+#include <math.h>
+#endif
+
+// Added: FoV fixes
+flex_t sithMain_lastAspect = 1.0;
+
+int sithMain_Startup(HostServices *commonFuncs)
+{
+    int is_started; // esi
+
+    pSithHS = commonFuncs;
+    is_started = sithStrTable_Startup() & 1;
+    is_started = sithEvent_Startup() & is_started;
+    is_started = sithWorld_Startup() & is_started;
+    is_started = sithRender_Startup() & is_started;
+    is_started = sithCollision_Startup() & is_started;
+    is_started = sithThing_Startup() & is_started;
+    is_started = sithComm_Startup() & is_started;
+    is_started = stdComm_Startup() & is_started;
+    is_started = sithCog_Startup() & is_started;
+    is_started = sithAI_Startup() & is_started;
+    is_started = sithSprite_Startup() & is_started;
+    is_started = sithParticle_Startup() & is_started;
+    is_started = sithPuppet_Startup() & is_started;
+    is_started = sithAIClass_Startup() & is_started;
+    is_started = sithSoundClass_Startup() & is_started;
+    is_started = sithMaterial_Startup() & is_started;
+    is_started = sithTemplate_Startup() & is_started;
+    is_started = sithModel_Startup() & is_started;
+    is_started = sithSurface_Startup() & is_started;
+    sithSound_Startup();
+    sithSoundMixer_Startup();
+    sithWeapon_Startup();
+
+#ifndef NO_JK_MMAP
+    //_memset(&g_sithMode, 0, 0x18u);
+#endif
+    g_sithMode = 0;
+    g_submodeFlags = 0;
+    sithSurface_byte_8EE668 = 0;
+    g_debugmodeFlags = 0;
+    jkPlayer_setDiff = 0;
+    g_mapModeFlags = 0;
+
+    // Added
+    if (Main_bHeadless || Main_bDedicatedServer) {
+        g_debugmodeFlags |= DEBUGFLAG_IN_EDITOR;
+    }
+
+    if ( !is_started )
+        return 0;
+
+    sith_bStartup = 1;
+    return 1;
+}
+
+void sithShutdown()
+{
+    stdPlatform_Printf("OpenJKDF2: %s\n", __func__);
+    //sithWeapon
+    sithSoundMixer_Shutdown();
+    sithSound_Shutdown();
+    sithSurface_Shutdown();
+    sithModel_Shutdown();
+    sithTemplate_Shutdown();
+    sithMaterial_Shutdown();
+    sithSoundClass_Shutdown();
+    sithAIClass_Shutdown();
+    sithPuppet_Shutdown();
+    sithParticle_Shutdown();
+    sithSprite_Shutdown();
+    sithAI_Shutdown();
+    sithCog_Shutdown();
+    stdComm_Shutdown();
+    sithMessage_Shutdown();
+    sithThing_Shutdown();
+    sithCollision_Shutdown();
+    sithRender_Shutdown();
+    sithWorld_Shutdown();
+    sithEvent_Shutdown();
+    sithStrTable_Shutdown();
+    sith_bStartup = 0;
+}
+
+int sithOpenStatic(char *pFilename)
+{
+    sithWorld_g_pStaticWorld = sithWorld_NewEntry();
+    sithWorld_g_pStaticWorld->level_type_maybe |= 1;
+    return sithWorld_Load(sithWorld_g_pStaticWorld, pFilename) != 0;
+}
+
+void sithCloseStatic()
+{
+    stdPlatform_Printf("OpenJKDF2: %s\n", __func__);
+    if ( sithWorld_g_pStaticWorld )
+    {
+        sithWorld_FreeEntry(sithWorld_g_pStaticWorld);
+        sithWorld_g_pStaticWorld = 0;
+    }
+}
+
+int sithMain_Mode1Init(char *a1)
+{
+    sithWorld_g_pCurrentWorld = sithWorld_NewEntry();
+
+    if ( !sithWorld_Load(sithWorld_g_pCurrentWorld, a1) )
+        return 0;
+
+    sithTime_Startup();
+    sithWorld_InitPlayers();
+    sithOpen();
+    sithTime_Startup();
+    g_sithMode = 1;
+    return 1;
+}
+
+int sithOpenNormal(char *path)
+{
+    sithWorld_g_pCurrentWorld = sithWorld_NewEntry();
+
+    if ( !sithWorld_Load(sithWorld_g_pCurrentWorld, path) )
+        return 0;
+
+    sithWorld_InitPlayers();
+    sithOpen();
+    g_sithMode = 1;
+    return 1;
+}
+
+int sithOpenMulti(char *fpath)
+{
+    sithWorld_g_pCurrentWorld = sithWorld_NewEntry();
+    if ( !sithWorld_Load(sithWorld_g_pCurrentWorld, fpath) )
+        return 0;
+    sithOpen();
+    sithTime_Startup();
+    sithMulti_Startup();
+    g_sithMode = 1;
+    return 1;
+}
+
+int sithOpen()
+{
+    jkPlayer_currentTickIdx = 0;
+    sithRender_lastRenderTick = 1;
+    sithWorld_ResetRenderState(sithWorld_g_pCurrentWorld);
+    sithEvent_Open();
+    sithSurface_Open();
+    sithAI_Open();
+    sithSoundMixer_Open();
+    sithCog_Open();
+    sithControl_Open();
+    sithAIAwareness_Startup();
+    sithRender_Open();
+    sithWeapon_StartupEntry();
+    sith_bOpen = 1;
+    return 1;
+}
+
+void sithClose()
+{
+    if ( sith_bOpen )
+    {
+        sithSoundMixer_StopSong();
+        sithRender_Close();
+        sithAIAwareness_Close();
+        sithControl_Close();
+        sithCog_Close();
+        sithSoundMixer_Close();
+        sithWorld_Free();
+        sithAI_Close();
+        sithSurface_Startup2();
+        sithEvent_Close();
+        sithPlayer_Close();
+        sithWeapon_ShutdownEntry();
+        g_sithMode = 0;
+        g_submodeFlags = 0;
+        sith_bOpen = 0;
+    }
+}
+
+void sithMain_SetEndLevel()
+{
+    sithMain_bEndLevel = 1;
+}
+
+int sithMain_tickStartMs;
+int sithMain_tickEndMs;
+
+// MOTS altered
+int sithUpdate()
+{
+#if 0
+    if (sithWorld_g_pCurrentWorld) {
+        for (int i = 0; i < sithWorld_g_pCurrentWorld->numKeyframes; i++) {
+            rdKeyframe* keyframe = &sithWorld_g_pCurrentWorld->aKeyframes[i];
+            if (keyframe->id != i) {
+                stdPlatform_Printf("BAD KEYFRAME!! %d -> %d\n", i, keyframe->id);
+            }
+        }
+        
+    }
+#endif
+
+    sithMain_tickStartMs = stdPlatform_GetTimeMsec(); // Added: perf analyzing
+
+    if ( (g_submodeFlags & 8) != 0 )
+    {
+        sithTime_Advance();
+        sithMessage_ProcessMessages();
+
+#ifdef TARGET_RETRO_HOMEBREW
+        // Fallback to stepped 30Hz physics if ms delta is very high
+        if (sithTime_g_frameTime > 100) {
+            jkPlayer_bJankyPhysics = 0;
+        }
+        else {
+            jkPlayer_bJankyPhysics = 1;
+        }
+#endif
+
+#ifdef FIXED_TIMESTEP_PHYS
+        if (NEEDS_STEPPED_PHYS) {
+            // Run all physics at a fixed timestep
+            flex_d_t rolloverCombine = sithTime_g_frameTimeFlex + sithTime_physicsRolloverFrames;
+
+            flex_d_t framesToApply = rolloverCombine * TARGET_PHYSTICK_FPS; // get number of 50FPS steps passed
+            uint32_t wholeFramesToApply = (uint32_t)(float)round((float)framesToApply);
+            sithTime_physicsRolloverFrames = rolloverCombine - (((flex_d_t)wholeFramesToApply) * DELTA_PHYSTICK_FPS);
+
+            //printf("%f %f\n", framesToApply, rolloverCombine);
+
+            flex_t tmp = sithTime_g_frameTimeFlex;
+            uint32_t tmp2 = sithTime_g_frameTime;
+            sithTime_g_frameTimeFlex = DELTA_PHYSTICK_FPS;
+            sithTime_g_frameTime = (int)(DELTA_PHYSTICK_FPS * 1000.0);
+
+            // Added: as many steps as the rollover accounts for (it used the
+            // truncated count, so time rounded up was lost: things ran slow).
+            for (uint32_t i = 0; i < wholeFramesToApply; i++)
+            {
+                sithSurface_Tick(sithTime_g_frameTimeFlex);
+                sithThing_Update(sithTime_g_frameTimeFlex, sithTime_g_frameTime);
+            }
+
+            sithTime_g_frameTimeFlex = tmp;
+            sithTime_g_frameTime = tmp2;
+        }
+        else
+#endif
+        {
+            sithSurface_Tick(sithTime_g_frameTimeFlex);
+            sithThing_Update(sithTime_g_frameTimeFlex, sithTime_g_frameTime);
+        }
+        sithConsole_Flush();
+        return 1;
+    }
+    else
+    {
+        // TODO REMOVE
+        //sithWorld_g_pCurrentWorld->pLocalPlayer->physicsParams.flags |= SITH_PF_FLY;
+        //sithWorld_g_pCurrentWorld->pLocalPlayer->physicsParams.flags &= ~SITH_PF_USEGRAVITY;
+        
+        ++jkPlayer_currentTickIdx;
+        sithAdvanceRenderTick();
+        sithSoundMixer_ResumeMusic(0);
+        sithTime_Advance();
+
+#ifdef FIXED_TIMESTEP_PHYS
+        if (NEEDS_STEPPED_PHYS) {
+            // Run all physics at a fixed timestep
+            flex_d_t rolloverCombine = sithTime_g_frameTimeFlex + sithTime_physicsRolloverFrames;
+
+            flex_d_t framesToApply = rolloverCombine * TARGET_PHYSTICK_FPS; // get number of 50FPS steps passed
+            uint32_t wholeFramesToApply = (uint32_t)(float)round((float)framesToApply);
+            sithTime_physicsRolloverFrames = rolloverCombine - (((flex_d_t)wholeFramesToApply) * DELTA_PHYSTICK_FPS);
+
+            // TODO figure this out
+            sithControl_ReadControls();
+            if ( g_sithMode != 2 )
+            {
+                sithControl_Update(sithTime_g_frameTimeFlex, sithTime_g_frameTime);
+            }
+            sithControl_FinishRead();
+
+            flex_t tmp = sithTime_g_frameTimeFlex;
+            uint32_t tmp2 = sithTime_g_frameTime;
+            flex_t tmp3 = sithTime_g_fps;
+            flex_t tmp4 = stdControl_updateKHz;
+            flex_t tmp5 = stdControl_updateHz;
+            uint32_t tmp6 = sithTime_g_msecGameTime;
+            sithTime_g_msecGameTime -= sithTime_g_frameTime;
+            sithTime_g_frameTimeFlex = DELTA_PHYSTICK_FPS;
+            sithTime_g_frameTime = (int)(DELTA_PHYSTICK_FPS * 1000.0);
+            sithTime_g_fps = 1.0 / sithTime_g_frameTimeFlex;
+            //stdControl_updateKHz = 1.0 / (DELTA_PHYSTICK_FPS * 1000.0);
+            //stdControl_updateHz = sithTime_g_fps;        
+
+            //printf("%f %u %f %f\n",framesToApply, wholeFramesToApply, rolloverCombine, sithTime_physicsRolloverFrames);
+
+            for (int i = 0; i < wholeFramesToApply; i++)
+            {
+                sithSoundMixer_Update(sithTime_g_frameTimeFlex);
+                sithEvent_Process();
+
+                if ( sithMessage_g_inputstream )
+                    sithMessage_ProcessMessages();
+
+                if ( (g_debugmodeFlags & DEBUGFLAG_NO_AIEVENTS) == 0  && (!sithNet_isMulti || sithNet_isMulti && sithNet_isServer))
+                    sithAI_Process();
+
+                sithSurface_Tick(sithTime_g_frameTimeFlex);
+                // TODO
+                //if (g_sithMode != 2 )
+                //{
+                //    sithControl_Update(sithTime_g_frameTimeFlex, sithTime_g_frameTime);
+                //}
+                sithThing_Update(sithTime_g_frameTimeFlex, sithTime_g_frameTime);
+                sithThing_MotsTick(0x1F, 0, 0);
+
+                sithCog_ProcessCogs();
+
+                // COG scripts will sleep for periods of time based on sithTime_g_msecGameTime,
+                // so we have to emulate the current time as well
+                sithTime_g_msecGameTime += sithTime_g_frameTime;
+            }
+
+            sithTime_g_frameTimeFlex = tmp;
+            sithTime_g_frameTime = tmp2;
+            sithTime_g_fps = tmp3;
+            sithTime_g_msecGameTime = tmp6;
+            //stdControl_updateKHz = tmp4;
+            //stdControl_updateHz = tmp5;
+        }
+        else
+#endif
+        {
+            sithSoundMixer_Update(sithTime_g_frameTimeFlex);
+            sithEvent_Process();
+
+            if ( sithMessage_g_inputstream )
+                sithMessage_ProcessMessages();
+
+            if ( (g_debugmodeFlags & DEBUGFLAG_NO_AIEVENTS) == 0 && (!sithNet_isMulti || sithNet_isMulti && sithNet_isServer))
+                sithAI_Process();
+        
+            sithSurface_Tick(sithTime_g_frameTimeFlex);
+            if ( g_sithMode != 2 )
+            {
+#ifdef FIXED_TIMESTEP_PHYS
+                sithControl_ReadControls();
+#endif
+                sithControl_Update(sithTime_g_frameTimeFlex, sithTime_g_frameTime);
+#ifdef FIXED_TIMESTEP_PHYS
+                sithControl_FinishRead();
+#endif
+            }
+
+            sithThing_Update(sithTime_g_frameTimeFlex, sithTime_g_frameTime);
+            sithThing_MotsTick(0x1F, 0, 0);
+
+            sithCog_ProcessCogs();
+        }
+
+        //sithAI_AIList();
+        
+        sithConsole_Flush();
+        sithMulti_Update(sithTime_g_frameTime);
+        sithGamesave_Process();
+
+        sithMain_tickEndMs = stdPlatform_GetTimeMsec();
+
+        return 0;
+    }
+}
+
+void sithDrawScene()
+{
+#if defined(TARGET_RETRO_HOMEBREW)
+    jkPlayer_fov = 98; // 90deg vertical, 106deg horizontal stock
+    jkPlayer_bJankyPhysics = 1;
+    jkPlayer_fovIsVertical = 0;
+    jkPlayer_enableOrigAspect = 0;
+#endif
+
+    if ( (g_submodeFlags & 8) == 0 )
+    {
+        sithAdvanceRenderTick();
+
+#if defined(QOL_IMPROVEMENTS)
+        if (sithCamera_g_pCurCamera && sithCamera_g_pCurCamera->rdCamera.pCanvas)
+        {
+            // Set screen aspect ratio
+            flex_t aspect = sithCamera_g_pCurCamera->rdCamera.pCanvas->half_screen_height / sithCamera_g_pCurCamera->rdCamera.pCanvas->half_screen_width;
+#if defined(TARGET_TWL)
+            //aspect = 192.0/256.0;
+            //const flex_t canvasWidth = 256.0;
+            //const flex_t canvasHeight = 192.0;
+            //aspect = 1.0;
+            aspect = 192.0/256.0;
+            const flex_t canvasWidth = 256.0;
+            const flex_t canvasHeight = 192.0;
+            sithCamera_g_pCurCamera->rdCamera.pCanvas->half_screen_width = canvasWidth/2;
+            sithCamera_g_pCurCamera->rdCamera.pCanvas->half_screen_height = canvasHeight/2;
+            sithCamera_g_pCurCamera->rdCamera.pCanvas->widthMinusOne = canvasWidth - 1.0;
+            sithCamera_g_pCurCamera->rdCamera.pCanvas->heightMinusOne = canvasHeight - 1.0;
+            static flex_t sithMain_UpdateCamera_lastFov = 90.0;
+            static void* sithMain_UpdateCamera_lastCamera = NULL;
+
+            //if (aspect != sithMain_lastAspect || jkPlayer_fov != sithCamera_g_pCurCamera->rdCamera.fov || jkPlayer_fov != sithMain_UpdateCamera_lastFov || sithMain_UpdateCamera_lastCamera != sithCamera_g_pCurCamera) {
+#endif
+                if (!Main_bMotsCompat)
+                {
+                    rdCamera_SetAspectRatio(&sithCamera_g_pCurCamera->rdCamera, aspect);
+                    rdCamera_SetFOV(&sithCamera_g_pCurCamera->rdCamera, jkPlayer_fov);
+                    rdCamera_SetOrthoScale(&sithCamera_g_pCurCamera->rdCamera, 250.0);
+                }
+                else {
+                    rdCamera_SetAspectRatio(&sithCamera_g_pCurCamera->rdCamera, aspect);
+
+                    // We still need this override for cameras that don't have zoom (third-person)
+                    if (sithCamera_g_pCurCamera->type != 1) {
+                        rdCamera_SetFOV(&sithCamera_g_pCurCamera->rdCamera, jkPlayer_fov);
+                    }
+                    rdCamera_SetOrthoScale(&sithCamera_g_pCurCamera->rdCamera, 250.0);
+                }
+#if defined(TARGET_TWL)
+            //}
+#endif
+
+            sithMain_lastAspect = aspect;
+#if defined(TARGET_TWL)
+            sithMain_UpdateCamera_lastFov = jkPlayer_fov;
+            sithMain_UpdateCamera_lastCamera = sithCamera_g_pCurCamera;
+#endif
+        }
+#endif
+
+        //sithCamera_g_pCurCamera->rdCamera.aspectRatio += 0.01;
+        sithCamera_Update(sithCamera_g_pCurCamera);
+        sithCamera_RenderScene();
+    }
+}
+
+void sithAdvanceRenderTick()
+{
+    if ( !++sithRender_lastRenderTick )
+    {
+        sithWorld_ResetRenderState(sithWorld_g_pCurrentWorld);
+        sithRender_lastRenderTick = 1;
+    }
+}
+
+void sithMain_set_sithmode_5()
+{
+    g_sithMode = 5;
+}
+
+void sithMain_SetEpisodeName(char *text)
+{
+    _strncpy(sithWorld_episodeName, text, 0x1Fu);
+    sithWorld_episodeName[31] = 0;
+}
+
+// MOTS altered
+void sithOpenPostProcess()
+{
+    SithThing *v3; // esi
+    sithCog *v4; // eax
+    char v5[128]; // [esp+10h] [ebp-80h] BYREF
+
+
+#ifdef LINUX_TMP
+    //g_debugmodeFlags |= 1;
+#endif
+    sithTime_Startup();
+    sithInventory_ResetInventory(sithPlayer_g_pLocalPlayerThing);
+
+    sithCog_BroadcastMessage(SITH_MESSAGE_STARTUP, 0, 0, 0, 0);
+    for (uint32_t v2 = 0; v2 < sithWorld_g_pCurrentWorld->numThingsLoaded; v2++)
+    {
+        v3 = &sithWorld_g_pCurrentWorld->aThings[v2];
+        v4 = v3->pCog;
+        if (Main_bMotsCompat && !v3->type) continue; // MOTS added
+
+        if ( v4 )
+        {
+            sithCog_SendMessage(v4, SITH_MESSAGE_CREATED, SENDERTYPE_THING, v3->idx, 0, 0, 0);
+        }
+        if ( v3->type == SITH_THING_ACTOR )
+        {
+            sithActor_SetDifficulty(v3);
+        }
+    }
+
+    if ( sithNet_isMulti )
+    {
+        sithPlayer_NewPlayer(sithPlayer_g_pLocalPlayerThing);
+        sithMulti_SendWelcome(stdComm_dplayIdSelf, playerThingIdx, -1);
+        sithMulti_SendWelcome(stdComm_dplayIdSelf, playerThingIdx, -1);
+        sithTime_Startup();
+    }
+    else
+    {
+        stdString_snprintf(v5, 128, "%s%s", "_JKAUTO_", sithGamesave_AutosaveMapName()); // Added: single-slot on DC
+        stdFnames_ChangeExt(v5, "jks");
+        int dbg_wr = sithGamesave_Save(v5, 1, 0, 0);
+#ifdef TARGET_DREAMCAST
+        // Added: on SD the write above is the full autosave; also drop a slim copy
+        // on the VMU so the card always carries a resume point.
+        sithGamesave_DcFlushSlimToVmu();
+#endif
+        sithTime_Startup();
+    }
+}

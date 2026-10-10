@@ -1,0 +1,104 @@
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_VERSION 1)
+set(CMAKE_SYSTEM_PROCESSOR i686)
+set(TOOLCHAIN_PREFIX i686-w64-mingw32)
+
+set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+
+set(CMAKE_C_COMPILER   "${TOOLCHAIN_PREFIX}-gcc" CACHE STRING "C compiler" FORCE)
+set(CMAKE_CXX_COMPILER "${TOOLCHAIN_PREFIX}-g++" CACHE STRING "C++ compiler" FORCE)
+set(CMAKE_RC_COMPILER  "${TOOLCHAIN_PREFIX}-windres" CACHE STRING "RC compiler" FORCE)
+# windres chokes on the OPENJKDF2_RELEASE_VERSION_STRING_W macro when pre-processor output is piped
+set(CMAKE_RC_FLAGS "--use-temp-file")
+
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+set(CMAKE_IGNORE_PATH "/opt/homebrew;/opt/homebrew/include;/opt/homebrew/lib;/usr/local")
+#set(CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH FALSE)
+
+string(REGEX MATCH "^[0-9]+" CMAKE_SYSTEM_MAJOR_VERSION ${CMAKE_SYSTEM_VERSION})
+string(REGEX REPLACE "^[0-9]+\\.([0-9]+).*" "\\1" CMAKE_SYSTEM_MINOR_VERSION ${CMAKE_SYSTEM_VERSION})
+
+# x87 FPU (no SSE) for pre-SSE2 hardware compatibility. -fexcess-precision=standard
+# makes float expressions round to their declared type per the C standard (instead of
+# GNU-mode's "fast" behavior that keeps 80-bit excess precision in x87 registers).
+# Without it, the camera/view matrix math rounds inconsistently frame-to-frame and an
+# intermittent ~90-degree view rotation appears during movement. This is the targeted
+# fix for the excess-precision bug; unlike -ffloat-store it doesn't force every float
+# variable to memory, so the performance cost is far smaller.
+add_compile_options(-fstack-check=no -fno-stack-limit -mno-sse -mno-sse2 -mfpmath=387 -fexcess-precision=standard)
+add_link_options(
+    -Wl,-t
+#   -flto=auto -ffat-lto-objects -flto-compression-level=9 -flto-partition=one
+)
+
+string(JOIN " " CMAKE_C_FLAGS_INIT
+# Target the system msvcrt.dll (present on every Windows since 2000/XP) rather than
+# a redistributable CRT (msvcr120.dll) so the .exe needs no shipped DLLs. msvcrt's
+# printf is C89-only, so route stdio through MinGW's own C99 implementation in the
+# static libmingwex to keep %lld/%f/positional args correct without a newer CRT DLL.
+    -D__USE_MINGW_ANSI_STDIO=1
+    -nodefaultlibs
+# __imp_ prefixed symbols are long time obsolete and not used in static libs anyway
+    -mnop-fun-dllimport
+    -ffunction-sections)
+set(CMAKE_CXX_FLAGS_INIT ${CMAKE_C_FLAGS_INIT})
+
+# Unfortunately, CMAKE_SIZEOF_VOID_P is not yet available for determining machine word size
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL x86 OR
+   CMAKE_SYSTEM_PROCESSOR STREQUAL arm)
+set(MINGW_STACK_SIZE  0x10000,0x1000)
+set(MINGW_HEAP_SIZE 0x100000,0x10000)
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL x86_64 OR
+       CMAKE_SYSTEM_PROCESSOR STREQUAL AMD64 OR
+       CMAKE_SYSTEM_PROCESSOR STREQUAL arm64 OR
+       CMAKE_SYSTEM_PROCESSOR STREQUAL aarch64)
+set(MINGW_STACK_SIZE  0x20000,0x2000)
+set(MINGW_HEAP_SIZE 0x200000,0x20000)
+else()
+set(MINGW_STACK_SIZE  0x10000,0x1000)
+set(MINGW_HEAP_SIZE 0x100000,0x10000)
+endif()
+
+# Original MinGW default libs
+# -lmingw32 -lgcc -lgcc_eh -lmoldname -lmingwex -lmsvcrt -ladvapi32 -lshell32 -luser32 -lkernel32 -lmingw32 -lgcc -lgcc_eh -lmoldname -lmingwex -lmsvcrt
+# By design, MinGW should not link to advapi32 shell32 user32 by default anyway
+set(CMAKE_C_STANDARD_LIBRARIES
+# Everything but the system CRT (msvcrt) and kernel32 comes from static libs so the
+# .exe imports only guaranteed Windows system DLLs. libssp is static here so
+# stack-protected objects don't drag in libssp-0.dll.
+# Added: on this i686 toolchain (unlike x86_64), libssp's _guard_setup calls into
+# advapi32's CryptAcquireContextA/CryptGenRandom/CryptReleaseContext for its canary
+# entropy -- advapi32 has to be linked right after -lssp here (it's already linked
+# again later in plat_mingw_x86_32.cmake's target_link_libraries for our own code,
+# but that occurrence comes too early in link order to satisfy libssp's own symbols).
+    "-Wl,-Bstatic,-lssp,-ladvapi32,-lpthread,-lmingwex,-lmingw32,-lgcc,-Bdynamic,-lmsvcrt,-lkernel32"
+    CACHE INTERNAL CMAKE_C_STANDARD_LIBRARIES # there are nasty interdependencies between libpthread and libgcc/libgcc_eh
+)
+set(CMAKE_CXX_STANDARD_LIBRARIES
+    "-Wl,-Bstatic,-lstdc++,-lssp,-ladvapi32,-lpthread,-lmingwex,-lmingw32,-lgcc,-lgcc_eh,-Bdynamic,-lmsvcrt,-lkernel32"
+    CACHE INTERNAL CMAKE_CXX_STANDARD_LIBRARIES # there are nasty interdependencies between libpthread and libgcc/libgcc_eh
+)
+
+set(CMAKE_EXE_LINKER_FLAGS_INIT
+    "-Wl,--major-os-version,${CMAKE_SYSTEM_MAJOR_VERSION},--minor-os-version,${CMAKE_SYSTEM_MINOR_VERSION}\
+     -Wl,--major-subsystem-version,${CMAKE_SYSTEM_MAJOR_VERSION},--minor-subsystem-version,${CMAKE_SYSTEM_MINOR_VERSION}\
+     -Wl,--major-image-version,${CMAKE_SYSTEM_MAJOR_VERSION},--minor-image-version,${CMAKE_SYSTEM_MINOR_VERSION}\
+     -Wl,--dynamicbase,--nxcompat,--no-bind,--no-seh,--gc-sections,--no-insert-timestamp\
+     -Wl,-Map,%\
+     -Xlinker --stack -Xlinker ${MINGW_STACK_SIZE}\
+     -Xlinker --heap  -Xlinker ${MINGW_HEAP_SIZE}" # -Wl does not support commas , in options
+)
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "-mwindows ${CMAKE_EXE_LINKER_FLAGS_INIT}")
+
+set(WIN32 TRUE)
+set(MINGW TRUE)
+set(PLAT_MINGW_X86_32 TRUE CACHE BOOL "MinGW Win32 target")
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake_modules")
+
+message(STATUS "MinGW cross-compile toolchain invoked")

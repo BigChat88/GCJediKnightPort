@@ -1,0 +1,1387 @@
+#include "sithCollision.h"
+
+#include "World/sithThing.h"
+#include "World/sithWeapon.h"
+#include "World/sithItem.h"
+#include "World/sithActor.h"
+#include "World/sithSector.h"
+#include "Engine/sithIntersect.h"
+#include "World/sithWorld.h"
+#include "World/jkPlayer.h"
+#include "World/sithSurface.h"
+#include "World/sithSoundClass.h"
+#include "Gameplay/sithTime.h"
+#include "Engine/sithPhysics.h"
+#include "Engine/sithCamera.h"
+#include "General/stdMath.h"
+#include "Primitives/rdMath.h"
+#include "jk.h"
+
+static int sithCollision_initted = 0;
+
+int sithCollision_bDebugCollide = 0;
+
+int sithCollision_Startup()
+{
+    if ( sithCollision_initted )
+        return 0;
+
+    _memset(sithCollision_collisionHandlers, 0, 144 * sizeof(SithCollideResult)); // sizeof(sithCollision_collisionHandlers)
+    _memset(sithCollision_aThingSurfaceCollideResults, 0, 12 * sizeof(int)); // sizeof(sithCollision_aThingSurfaceCollideResults)
+    sithCollision_AddCollisionHandler(SITH_THING_ACTOR, SITH_THING_ACTOR, sithActor_ActorCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_ACTOR, SITH_THING_PLAYER, sithActor_ActorCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_ACTOR, SITH_THING_COG, sithActor_ActorCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_PLAYER, SITH_THING_PLAYER, sithCollision_ThingCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_PLAYER, SITH_THING_COG, sithCollision_ThingCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_DEBRIS, SITH_THING_ACTOR, sithCollision_ParticleAndActorCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_DEBRIS, SITH_THING_PLAYER, sithCollision_ParticleAndActorCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_DEBRIS, SITH_THING_DEBRIS, sithCollision_ThingCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_WEAPON, SITH_THING_ACTOR, sithWeapon_ThingCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_WEAPON, SITH_THING_PLAYER, sithWeapon_ThingCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_WEAPON, SITH_THING_DEBRIS, sithWeapon_ThingCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_WEAPON, SITH_THING_COG, sithWeapon_ThingCollisionHandler, 0);
+    sithCollision_AddCollisionHandler(SITH_THING_ITEM, SITH_THING_PLAYER, sithItem_PlayerCollisionHandler, 0);
+
+    sithCollision_AddSurfaceCollisionHandler(SITH_THING_ACTOR, sithActor_SurfaceCollisionHandler);
+    sithCollision_AddSurfaceCollisionHandler(SITH_THING_WEAPON, sithWeapon_SurfaceCollisionHandler);
+
+    sithCollision_initted = 1;
+    return 1;
+}
+
+int sithCollision_Shutdown()
+{
+    int result; // eax
+
+    result = sithCollision_initted;
+    if ( sithCollision_initted )
+        sithCollision_initted = 0;
+    return result;
+}
+
+void sithCollision_AddCollisionHandler(int type1, int type2, sithCollision_collisionHandler_t pProcessFunc, sithCollision_searchHandler_t pUnknownFunc)
+{
+    int idx = type2 + 12 * type1;
+    SITH_ASSERTREL(pProcessFunc != NULL); // Added: J3D assert
+    sithCollision_collisionHandlers[idx].handler = pProcessFunc;
+    sithCollision_collisionHandlers[idx].pUnknownFunc = pUnknownFunc;
+    sithCollision_collisionHandlers[idx].bDifferentTypHandler = 0;
+    if ( type1 != type2 )
+    {
+        idx = type1 + 12 * type2;
+        sithCollision_collisionHandlers[idx].handler = pProcessFunc;
+        sithCollision_collisionHandlers[idx].pUnknownFunc = pUnknownFunc;
+        sithCollision_collisionHandlers[idx].bDifferentTypHandler = 1;
+    }
+}
+
+void sithCollision_AddSurfaceCollisionHandler(int type, sithCollisionHitHandler_t fpHandler)
+{
+    sithCollision_aThingSurfaceCollideResults[type] = fpHandler;
+}
+
+SithCollision* sithCollision_PopStack()
+{
+    SithCollision* retVal = NULL;
+    flex_t maxDist = 3.4e38;
+    
+    for (int i = 0; i < sithCollision_aNumStackCollisions[sithCollision_searchStackIdx]; i++)
+    {
+        SithCollision* iter = &sithCollision_aCollisions[sithCollision_searchStackIdx].collisions[i];
+        if ( !iter->bEnumerated )
+        {
+            if ( maxDist <= iter->distance )
+            {
+                if ( maxDist == iter->distance && retVal->type & (SITHCOLLISION_THINGTOUCH | SITHCOLLISION_THINGCROSS) && iter->type & SITHCOLLISION_THINGADJOINCROSS ) // TODO enums
+                    retVal = iter;
+            }
+            else
+            {
+                maxDist = iter->distance;
+                retVal = iter;
+            }
+        }
+    }
+
+    if ( retVal )
+    {
+        retVal->bEnumerated = 1;
+        return retVal;
+    }
+    else
+    {
+        sithCollision_aNumStackCollisions[sithCollision_searchStackIdx] = 0;
+        sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx] = 0;
+        return NULL;
+    }
+}
+
+flex_t sithCollision_SearchForCollisions(SithSector *pStartSector, SithThing *pThing, const rdVector3 *startPos, const rdVector3 *moveNorm, flex_t moveDist, flex_t radius, int searchFlags)
+{
+    SithCollision *i; // ebp
+    SithSector *pSurfAdjSector; // esi
+    unsigned int num; // eax
+    unsigned int chk; // edi
+    unsigned int v17; // edx
+    unsigned int v18; // ebp
+    SithSector *j; // eax
+    SithSurfaceAdjoin *pAdjoin; // ebx
+    SithSector *pAdjoinSector; // esi
+    SithSector *v24; // edx
+    unsigned int v26; // [esp+10h] [ebp-8h]
+    flex_t curMoveDist; // [esp+2Ch] [ebp+14h]
+
+
+    sithCollision_searchStackIdx++;
+    sithCollision_aNumStackCollisions[sithCollision_searchStackIdx] = 0;
+    sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx] = 1;
+    curMoveDist = moveDist;
+    sithCollision_apSearchedSectors[sithCollision_searchStackIdx].aSectors[0] = pStartSector;
+
+    if (!pStartSector) {
+        jk_printf("OpenJKDF2 WARN: sithCollision_SearchForCollisions received NULL pStartSector!\n");
+        return 0.0f;
+    }
+
+    if ( (searchFlags & RAYCAST_1) == 0 )
+        curMoveDist = sithCollision_SearchForThingCollisions(pStartSector, pThing, startPos, moveNorm, moveDist, radius, searchFlags);
+    sithCollision_SearchForSurfaceCollisions(pStartSector, startPos, moveNorm, curMoveDist, radius, searchFlags);
+
+    v26 = 0;
+    for ( i = sithCollision_aCollisions[sithCollision_searchStackIdx].collisions; v26 < sithCollision_aNumStackCollisions[sithCollision_searchStackIdx]; ++v26 )
+    {
+        if ( i->type == SITHCOLLISION_ADJOINTOUCH )
+        {
+            if ( (searchFlags & RAYCAST_400) != 0 || i->distance <= (flex_d_t)curMoveDist )
+            {
+                pSurfAdjSector = i->surface->pAdjoin->sector;
+                num = sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx];
+                for (chk = 0; chk < num; chk++)
+                {
+                    if ( sithCollision_apSearchedSectors[sithCollision_searchStackIdx].aSectors[chk] == pSurfAdjSector )
+                        break;
+                }
+                
+                if ( chk >= num && num != 64)
+                {
+                    sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx] = num + 1;
+                    sithCollision_apSearchedSectors[sithCollision_searchStackIdx].aSectors[num] = pSurfAdjSector;
+                    if ( (searchFlags & RAYCAST_1) == 0 )
+                        curMoveDist = sithCollision_SearchForThingCollisions(pSurfAdjSector, pThing, startPos, moveNorm, curMoveDist, radius, searchFlags);
+                    sithCollision_SearchForSurfaceCollisions(pSurfAdjSector, startPos, moveNorm, curMoveDist, radius, searchFlags);
+                }
+            }
+            i->bEnumerated = 1;
+        }
+        ++i;
+    }
+    if ( curMoveDist != 0.0 && (searchFlags & RAYCAST_800) != 0 )
+    {
+        v17 = sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx];
+        for (v18 = 0; v18 < v17; v18++)
+        {
+            j = sithCollision_apSearchedSectors[sithCollision_searchStackIdx].aSectors[v18];
+            for (pAdjoin = j->adjoins; pAdjoin != NULL; pAdjoin = pAdjoin->next)
+            {
+                if (!(pAdjoin->flags & SITHSURF_ADJOIN_ALLOW_MOVEMENT)) continue;
+
+                pAdjoinSector = pAdjoin->sector;
+                if (!pAdjoinSector->pFirstThingInSector) continue;
+                
+                num = sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx];
+                for (chk = 0; chk < num; chk++)
+                {
+                    v24 = sithCollision_apSearchedSectors[sithCollision_searchStackIdx].aSectors[chk];
+                    if ( v24 == pAdjoinSector )
+                        break;
+                }
+
+                if (chk >= num && num != 64)
+                {
+                    sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx] = num + 1;
+                    sithCollision_apSearchedSectors[sithCollision_searchStackIdx].aSectors[num] = pAdjoinSector;
+                    curMoveDist = sithCollision_SearchForThingCollisions(pAdjoinSector, pThing, startPos, moveNorm, curMoveDist, radius, searchFlags);
+                }
+            }
+        }
+    }
+    return curMoveDist;
+}
+
+void sithCollision_DecreaseStackLevel()
+{
+    --sithCollision_searchStackIdx;
+}
+
+flex_t sithCollision_SearchForThingCollisions(SithSector *pSector, SithThing *pThing, const rdVector3 *startPos, const rdVector3 *moveNorm, flex_t moveDist, flex_t radius, int searchFlags)
+{
+    SithThing *v7; // esi
+    SithThing *v8; // ebp
+    int v9; // ebx
+    int v10; // eax
+    SithThing *v13; // ecx
+    SithThing *v14; // eax
+    SithThing *v15; // ecx
+    SithThing *v16; // eax
+    int v19; // eax
+    rdFace *v21; // ebx
+    int v22; // edx
+    flex_t v23; // st7
+    SithCollision *v24; // ecx
+    rdMesh *senderMesh; // edx
+    sithCollision_searchHandler_t handler;
+    int v27; // eax
+    rdFace *a10; // [esp+4h] [ebp-18h] BYREF
+    rdVector3 a11; // [esp+10h] [ebp-Ch] BYREF
+
+    senderMesh = 0;
+    a10 = 0;
+    v7 = pSector->pFirstThingInSector;
+    if ( v7 )
+    {
+        v8 = pThing;
+        v10 = searchFlags & RAYCAST_8;
+        while (1)
+        {
+            if ( (!v10 || (v7->flags & SITH_TF_80))
+              && ((searchFlags & RAYCAST_10) == 0 || (v7->flags & SITH_TF_STANDABLE) != 0)
+              && v7->collide
+              && (v7->flags & (SITH_TF_DISABLED|SITH_TF_DESTROYED)) == 0
+              && ((searchFlags & RAYCAST_2000) == 0 || v7->type == SITH_THING_COG) )
+            {
+                if ( !v8 )
+                    goto LABEL_41;
+                if ( v8 != v7 )
+                {
+                    if ( sithCollision_collisionHandlers[12 * v8->type + v7->type].handler )
+                    {
+                        if ( (v8->flags & SITH_TF_DEAD) == 0
+                          && (v7->flags & SITH_TF_DEAD) == 0
+                          && (v8->type != SITH_THING_WEAPON
+                           || (v8->actorParams.flags & SITH_AF_CANROTATEHEAD) == 0
+                           || ((v13 = v8->pParent) == 0 || (v14 = v7->pParent) == 0 || v13 != v14 || v8->parentSignature != v7->parentSignature)
+                           && (v13 != v7 || v8->parentSignature != v7->signature))
+                          && (v7->type != SITH_THING_WEAPON
+                           || (v7->actorParams.flags & SITH_AF_CANROTATEHEAD) == 0
+                           || ((v15 = v7->pParent) == 0 || (v16 = v8->pParent) == 0 || v15 != v16 || v7->parentSignature != v8->parentSignature)
+                           && (v15 != v8 || v7->parentSignature != v8->signature)) )
+                        {
+                            if ( (v8->attach_flags & (SITH_ATTACH_THINGFACE | SITH_ATTACH_THING)) == 0 || v8->attachedThing != v7 || (v8->attach_flags & SITH_ATTACH_NOMOVE) == 0 && (searchFlags & RAYCAST_40) == 0 )
+                            {
+                                if ( (v7->attach_flags & (SITH_ATTACH_THINGFACE | SITH_ATTACH_THING)) == 0 || v7->attachedThing != v8 || (v7->attach_flags & SITH_ATTACH_NOMOVE) == 0 && (searchFlags & RAYCAST_40) == 0 )
+                                {
+LABEL_41:
+                                    v19 = sithIntersect_CheckSphereThingIntersection(v8, startPos, moveNorm, moveDist, radius, v7, searchFlags, &v23, &senderMesh, &a10, &a11);
+                                    if ( v19 )
+                                    {
+                                        v21 = a10;
+                                        v22 = sithCollision_aNumStackCollisions[sithCollision_searchStackIdx];
+                                        if ( v22 != 128 )
+                                        {
+                                            v19 |= SITHCOLLISION_THING;
+                                            sithCollision_aNumStackCollisions[sithCollision_searchStackIdx] = v22 + 1;
+                                            v24 = &sithCollision_aCollisions[sithCollision_searchStackIdx].collisions[v22];
+                                            v24->surface = 0;
+                                            v24->bEnumerated = 0;
+                                            v24->type = v19;
+                                            v24->distance = v23;
+                                            v24->pThingCollided = v7;
+                                            v24->pMeshCollided = senderMesh;
+                                            v24->face = v21;
+                                            rdVector_Copy3(&v24->hitNorm, &a11);
+                                        }
+                                        if ( v8 )
+                                        {
+                                            handler = sithCollision_collisionHandlers[12 * v8->type + v7->type].pUnknownFunc;
+                                            if ( handler )
+                                                v27 = handler(v8, v7);
+                                            else
+                                                v27 = 0;
+                                            if ( v27 )
+                                                moveDist = v23;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Added: Prevent deadlocks in some conditions
+            if (v7->pNextThingInSector == v7) break;
+            v7 = v7->pNextThingInSector;
+            if ( !v7 )
+                break;
+        }
+    }
+    return moveDist;
+}
+
+void sithCollision_SearchForSurfaceCollisions(SithSector *pSector, const rdVector3 *startPos, const rdVector3 *moveNorm, flex_t moveDist, flex_t radius, int colflags)
+{
+    SithSurface *v12; // esi
+    SithSurfaceAdjoin *v15; // eax
+    unsigned int v17; // ecx
+    unsigned int v18; // edi
+    SithSector **v19; // eax
+    int v20; // ecx
+    flex_d_t v21; // st7
+    SithCollision *v23; // eax
+    int v24; // ecx
+    unsigned int v25; // edi
+    unsigned int v26; // edx
+    SithSector **v27; // eax
+    int v28; // edx
+    flex_d_t v29; // st7
+    SithCollision *v31; // eax
+    int v32; // edx
+    flex_d_t v33; // st7
+    SithCollision *v34; // eax
+    rdVector3 *v35; // ecx
+    int v36; // ecx
+    flex_d_t v37; // st7
+    int v38; // edx
+    SithCollision *v40; // eax
+    int v42; // [esp+0h] [ebp-40h] BYREF
+    flex_t a7; // [esp+10h] [ebp-30h] BYREF
+    int v47; // [esp+20h] [ebp-20h]
+    flex_t v48; // [esp+24h] [ebp-1Ch] BYREF
+    rdVector3 pushVel; // [esp+34h] [ebp-Ch] BYREF
+    rdVector3 tmp;
+    
+    // Added: nullptr check
+    //if (!sector) return;
+
+    rdVector_Copy3(&tmp, startPos);
+    rdVector_ScaleAdd3Acc(&tmp, moveNorm, moveDist);
+
+    if(sithIntersect_IsSphereInSectorBox(&tmp, radius, pSector))
+    {
+        return;
+    }
+
+    for (v47 = 0; v47 < pSector->numSurfaces; v47++)
+    {
+        v12 = &pSector->surfaces[v47];
+        v15 = v12->pAdjoin;
+        if ( (v12->flags & SITH_SURFACE_HAS_COLLISION) == 0 && !v15 )
+            continue;
+
+        if ( !v15 )
+        {
+LABEL_46:
+            if ( (colflags & RAYCAST_4) == 0 && ((colflags & RAYCAST_10) == 0 || (v12->flags & SITH_SURFACE_FLOOR) != 0) )
+            {
+                v35 = sithWorld_g_pCurrentWorld->aVertices;
+                
+                if ( rdMath_DistancePointToPlane(&tmp, &v12->surfaceInfo.face.normal, &v35[*v12->surfaceInfo.face.vertexPosIdx]) <= radius )
+                {
+                    v36 = sithIntersect_CheckSphereFaceIntersectionEx(startPos, moveNorm, moveDist, radius, &v12->surfaceInfo.face, v35, &a7, &pushVel, colflags);
+                    if ( v36 )
+                    {
+                        if ( (colflags & RAYCAST_400) != 0 || rdVector_Dot3(moveNorm, &pushVel) < 0.0 )
+                        {
+                            v37 = a7;
+                            v38 = sithCollision_aNumStackCollisions[sithCollision_searchStackIdx];
+                            if ( v38 != 128 )
+                            {
+                                sithCollision_aNumStackCollisions[sithCollision_searchStackIdx] = v38 + 1;
+                                v40 = &sithCollision_aCollisions[sithCollision_searchStackIdx].collisions[v38];
+                                v40->pThingCollided = 0;
+                                v40->bEnumerated = 0;
+                                v40->type = v36 | SITHCOLLISION_WORLD;
+                                v40->distance = v37;
+                                v40->surface = v12;
+                                if ( &v42 != (int *)-52 )
+                                    v40->hitNorm = pushVel;
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if ( (colflags & RAYCAST_4) == 0 )
+        {
+            if ( (colflags & (RAYCAST_1000 | RAYCAST_100)) != 0 && (v15->flags & SITHSURF_ADJOIN_VISIBLE) == 0 )
+                goto LABEL_46;
+            if ( (colflags & RAYCAST_200) != 0 )
+            {
+                if ( (colflags & RAYCAST_100) != 0 )
+                    goto LABEL_22;
+                if ( (v15->flags & SITHSURF_ADJOIN_ALLOW_AI_ONLY) != 0 )
+                    goto LABEL_46;
+            }
+            if ( (colflags & RAYCAST_100) == 0 && (v15->flags & SITHSURF_ADJOIN_ALLOW_MOVEMENT) == 0 )
+                goto LABEL_46;
+        }
+LABEL_22:
+        // Standing?
+        if ( sithIntersect_CheckSphereFaceIntersection(startPos, moveNorm, moveDist, radius, &v12->surfaceInfo, sithWorld_g_pCurrentWorld->aVertices, &a7, colflags) )
+        {
+            if ( !(colflags & RAYCAST_4) || (colflags & RAYCAST_1) == 0 )
+            {
+                v17 = 0;
+                v18 = sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx];
+                if ( v18 )
+                {
+                    v19 = sithCollision_apSearchedSectors[sithCollision_searchStackIdx].aSectors;
+                    while ( *v19 != v15->sector )
+                    {
+                        ++v17;
+                        ++v19;
+                        if ( v17 >= v18 )
+                        {
+                            goto LABEL_30;
+                        }
+                    }
+                }
+                else
+                {
+LABEL_30:
+                    v20 = sithCollision_aNumStackCollisions[sithCollision_searchStackIdx];
+                    v21 = a7;
+                    if ( v20 != 128 )
+                    {
+                        sithCollision_aNumStackCollisions[sithCollision_searchStackIdx] = v20 + 1;
+                        v23 = &sithCollision_aCollisions[sithCollision_searchStackIdx].collisions[v20];
+                        v23->pThingCollided = 0;
+                        v23->bEnumerated = 0;
+                        v23->type = SITHCOLLISION_ADJOINTOUCH;
+                        v23->distance = v21;
+                        v23->surface = v12;
+                    }
+                }
+            }
+
+            // Falling?
+            if ( (colflags & RAYCAST_2) == 0 && sithIntersect_CheckSphereFaceIntersection(startPos, moveNorm, moveDist, 0.0, &v12->surfaceInfo, sithWorld_g_pCurrentWorld->aVertices, &v48, colflags) )
+            {
+                v24 = sithCollision_searchStackIdx;
+                if ( (colflags & RAYCAST_4) && (colflags & RAYCAST_1) != 0 )
+                {
+                    v25 = sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx];
+                    v26 = 0;
+                    if ( v25 )
+                    {
+                        v27 = sithCollision_apSearchedSectors[sithCollision_searchStackIdx].aSectors;
+                        while ( *v27 != v15->sector )
+                        {
+                            ++v26;
+                            ++v27;
+                            if ( v26 >= v25 )
+                                goto LABEL_42;
+                        }
+                    }
+                    else
+                    {
+LABEL_42:
+                        v28 = sithCollision_aNumStackCollisions[sithCollision_searchStackIdx];
+                        v29 = a7;
+                        if ( v28 != 128 )
+                        {
+                            sithCollision_aNumStackCollisions[sithCollision_searchStackIdx] = v28 + 1;
+                            v31 = &sithCollision_aCollisions[sithCollision_searchStackIdx].collisions[v28];
+                            v31->pThingCollided = 0;
+                            v31->bEnumerated = 0;
+                            v31->type = SITHCOLLISION_ADJOINTOUCH;
+                            v31->distance = v29;
+                            v31->surface = v12;
+                        }
+                    }
+                }
+                v32 = sithCollision_aNumStackCollisions[v24];
+                v33 = v48;
+                if ( v32 != 128 )
+                {
+                    sithCollision_aNumStackCollisions[v24] = v32 + 1;
+                    v34 = &sithCollision_aCollisions[sithCollision_searchStackIdx].collisions[v32];
+                    v34->pThingCollided = 0;
+                    v34->bEnumerated = 0;
+                    v34->type = SITHCOLLISION_ADJOINCROSS;
+                    v34->distance = v33;
+                    v34->surface = v12;
+                }
+            }
+        }
+    }
+}
+
+SithSector* sithCollision_FindSectorInRadius(SithSector *pStartSector, const rdVector3 *startPos, rdVector3 *endPos, flex_t radius)
+{
+    flex_d_t v4; // st6
+    SithSector *result; // eax
+    int v7; // edi
+    sithCollisionSearchResult *v8; // ebx
+    SithCollision *v9; // edx
+    flex_d_t v10; // st7
+    SithCollision *v11; // ecx
+    int v12; // esi
+    rdVector3 a1; // [esp+8h] [ebp-Ch] BYREF
+    flex_t a3a; // [esp+1Ch] [ebp+8h]
+
+    SITH_ASSERTREL(startPos && endPos && pStartSector); // Added: J3D assert
+    if ( sithIntersect_IsSphereInSector(endPos, 0.0, pStartSector) )
+        return pStartSector;
+    rdVector_Sub3(&a1, endPos, startPos);
+    a3a = rdVector_Normalize3Acc(&a1);
+    sithCollision_SearchForCollisions(pStartSector, 0, startPos, &a1, a3a, radius, RAYCAST_1);
+    v7 = sithCollision_searchStackIdx;
+    v8 = &sithCollision_aCollisions[sithCollision_searchStackIdx];
+    while ( 1 )
+    {
+        v9 = 0;
+        v10 = 3.4e38;
+        v11 = (SithCollision *)v8;
+        if ( sithCollision_aNumStackCollisions[v7] )
+        {
+            v12 = sithCollision_aNumStackCollisions[v7];
+            do
+            {
+                if ( !v11->bEnumerated )
+                {
+                    if ( v10 <= v11->distance )
+                    {
+                        if ( v10 == v11->distance && (v9 && v9->type & (SITHCOLLISION_THINGTOUCH | SITHCOLLISION_THINGCROSS)) != 0 && (v11->type & 4) != 0 ) // Added: v9 null check
+                            v9 = v11;
+                    }
+                    else
+                    {
+                        v10 = v11->distance;
+                        v9 = v11;
+                    }
+                }
+                ++v11;
+                --v12;
+            }
+            while ( v12 );
+        }
+        if ( v9 )
+        {
+            v9->bEnumerated = 1;
+        }
+        else
+        {
+            sithCollision_aNumStackCollisions[v7] = 0;
+            sithCollision_aNumSearchedSectors[v7] = 0;
+        }
+        if ( !v9 )
+            break;
+        if ( (v9->type & SITHCOLLISION_ADJOINCROSS) == 0 )
+        {
+            rdVector_Copy3(endPos, startPos);
+            rdVector_ScaleAdd3Acc(endPos, &a1, v9->distance);
+            break;
+        }
+        pStartSector = v9->surface->pAdjoin->sector;
+    }
+    result = pStartSector;
+    sithCollision_searchStackIdx = v7 - 1;
+    return result;
+}
+
+void sithCollision_FallHurt(SithThing *thing, flex_t vel)
+{
+    flex_d_t v2; // st7
+
+    v2 = (vel - 2.5) * (vel - 2.5) * 45.0;
+    if ( v2 > 1.0 )
+    {
+        sithSoundClass_PlayModeRandom(thing, SITH_SC_HITDAMAGED);
+        sithThing_DamageThing(thing, thing, v2, SITH_DAMAGE_FALL);
+    }
+}
+
+void sithCollision_RotateThing(SithThing *pThing, rdMatrix34 *pOrient)
+{
+    SithThing *i; // esi
+    rdVector3 a1a; // [esp+18h] [ebp-Ch] BYREF
+    rdVector3 tmp;
+
+    rdMatrix_PreMultiply34(&pThing->orient, pOrient);
+    for ( i = pThing->pAttachedThing; i; i = i->pNextAttachedThing )
+    {
+        rdVector_Sub3(&tmp, &i->position, &pThing->position);
+        rdVector_Copy3(&i->orient.scale, &tmp);
+        sithCollision_RotateThing(i, pOrient);
+        if ( (i->attach_flags & SITH_ATTACH_NOMOVE) == 0 )
+        {
+            rdVector_Sub3(&a1a, &i->orient.scale, &tmp);
+            if ( !rdVector_IsZero3(&a1a) )
+            {
+                sithCollision_MoveThing(i, &a1a, rdVector_Normalize3Acc(&a1a), 0);
+            }
+        }
+        rdVector_Zero3(&i->orient.scale);
+    }
+}
+
+flex_t sithCollision_MoveThing(SithThing *pThing, rdVector3 *moveNorm, flex_t moveDist, int flags)
+{
+    SithThing *v5; // ebp
+    SithThing *v10; // esi
+    flex_d_t v11; // st7
+    flex_d_t v12; // st7
+    //char v15; // c0
+    int v16; // edi
+    flex_t v17; // edx
+    //int v18; // edx
+    SithCollision *v19; // esi
+    //flex_d_t v20; // st7
+    //SithCollision *v21; // ecx
+    int v22; // ebx
+    flex_d_t v23; // st6
+    flex_d_t v24; // st7
+    flex_d_t v25; // st7
+    flex_d_t v30; // st5
+    SithThing *v34; // ecx
+    int v35; // eax
+    int v36; // eax
+    SithSurface *v37; // eax
+    flex_d_t v44; // st7
+    //char v46; // c3
+    //char v49; // c0
+    //char v52; // c0
+    SithThing *i; // esi
+    int v61; // eax
+    SithSurface *amount; // [esp+0h] [ebp-54h]
+    flex_t v64; // [esp+18h] [ebp-3Ch]
+    flex_t v65; // [esp+1Ch] [ebp-38h]
+    unsigned int v66; // [esp+20h] [ebp-34h]
+    rdVector3 direction; // [esp+24h] [ebp-30h] BYREF
+    rdVector3 posCopy;
+    rdVector3 out; // [esp+3Ch] [ebp-18h] BYREF
+    rdVector3 v72; // [esp+48h] [ebp-Ch] BYREF
+    SithSector* sectTmp;
+
+    v64 = 0.0;
+    v65 = 0.0;
+    v66 = 0;
+    SITH_ASSERTREL(sithCollision_initted); // Added: J3D asserts (bCollideStartup)
+    SITH_ASSERTREL(sithThing_ValidateThingPointer(pThing));
+    if ( moveDist <= 0.0 )
+        return 0.0;
+    v5 = pThing;
+    if (pThing->collide == SITH_COLLIDE_NONE)
+    {
+        flags |= RAYCAST_1 | RAYCAST_4;
+    }
+    if ( pThing->moveType == SITH_MT_PATH )
+    {
+        flags |= RAYCAST_4;
+    }
+    if ( pThing->type == SITH_THING_PLAYER )
+    {
+        flags |= RAYCAST_200;
+    }
+    if ( (flags & RAYCAST_1) == 0 )
+    {
+        flags |= RAYCAST_800;
+    }
+    v10 = pThing->pAttachedThing;
+    for ( direction = *moveNorm; v10; v10 = v10->pNextAttachedThing )
+    {
+        if (v10->attach_flags & SITH_ATTACH_NOMOVE)
+            continue;
+
+        v11 = sithCollision_MoveThing(v10, moveNorm, moveDist, RAYCAST_40);
+        if ( v11 >= moveDist ) continue;
+        
+        if ( (v10->attach_flags & SITH_ATTACH_THINGFACE) != 0 )
+        {
+            rdMatrix_TransformVector34(&out, &v10->attachedSufaceInfo->face.normal, &v5->orient);
+            v12 = stdMath_ClipNearZero(rdVector_Dot3(moveNorm, &out));
+            if ( v12 <= 0.0 ) {
+                continue;
+            }
+        }
+
+        if ( (v5->flags & SITH_TF_NOIMPACTDAMAGE) == 0 )
+        {
+            sithThing_DamageThing(v10, v5, (moveDist - v11) * 100.0, SITH_DAMAGE_IMPACT);
+        }
+        moveDist = v11;
+    }
+    sithCollision_dword_8B4BE4 = 0;
+    sectTmp = v5->sector;
+    if ( moveDist == 0.0 )
+    {
+LABEL_78:
+        if ( v66 < 4 )
+            goto LABEL_81;
+    }
+    else
+    {
+        while ( v66 < 4 )
+        {
+            v16 = 0;
+            rdVector_Copy3(&posCopy, &v5->position);
+            out = direction;
+            v17 = v5->moveSize;
+            sectTmp = v5->sector;
+
+            sithCollision_bDebugCollide = 0; // Added
+            if (pThing == sithPlayer_g_pLocalPlayerThing) {
+                sithCollision_bDebugCollide = 0;
+            }
+            sithCollision_SearchForCollisions(sectTmp, v5, &v5->position, &direction, moveDist, v17, flags);
+            sithCollision_bDebugCollide = 0; // Added
+            v36 = 0; // Added
+            while ( 1 )
+            {
+                v19 = sithCollision_PopStack();
+                if ( !v19 ) {
+                    break;
+                }
+
+                if ( v19->distance != 0.0 )
+                {
+                    rdVector_Copy3(&v5->position, &posCopy);
+                    rdVector_ScaleAdd3Acc(&v5->position, &direction, v19->distance);
+                }
+                if ( v19->distance >= (flex_d_t)moveDist )
+                {
+                    rdVector_Zero3(&v5->field_268);
+                }
+                else
+                {
+                    v25 = moveDist - v19->distance;
+                    rdVector_Scale3(&v5->field_268, &direction, v25);
+                    if ( v5->moveType == SITH_MT_PHYSICS
+                      && (v5->physicsParams.flags & SITH_PF_SURFACEBOUNCE) != 0
+                      && (!rdVector_IsZero3(&v5->physicsParams.gravityForce)) )
+                    {
+                        v30 = 1.0 - v19->distance / moveDist;
+                        v65 = v30;
+                        rdVector_ScaleAdd3Acc(&v5->physicsParams.vel, &v5->physicsParams.gravityForce, -v30);
+                    }
+                }
+                if ( (v19->type & SITHCOLLISION_THING) != 0 )
+                {
+                    // Added: noclip
+                    if (!(g_debugmodeFlags & DEBUGFLAG_NOCLIP) || pThing != sithPlayer_g_pLocalPlayerThing)
+                    {
+                        if (!(g_debugmodeFlags & DEBUGFLAG_NOCLIP) || ((g_debugmodeFlags & DEBUGFLAG_NOCLIP) && v19->pThingCollided != sithPlayer_g_pLocalPlayerThing))
+                        {
+                            v34 = v19->pThingCollided;
+                            v35 = v34->type + 12 * v5->type;
+                            if ( sithCollision_collisionHandlers[v35].bDifferentTypHandler )
+                                v36 = sithCollision_collisionHandlers[v35].handler(v34, v5, v19, 1);
+                            else
+                                v36 = sithCollision_collisionHandlers[v35].handler(
+                                          v5,
+                                          v34,
+                                          v19,
+                                          0);
+                        }
+                    }
+                    else {
+                        v36 = 0; // Added: noclip
+                    }
+                }
+                else if ( (v19->type & SITHCOLLISION_ADJOINCROSS) != 0 )
+                {
+                    v37 = v19->surface;
+                    rdVector_Copy3(&v72, &v5->position);
+                    if ( (v37->flags & SITH_SURFACE_COG_LINKED) != 0 )
+                        sithCog_SurfaceSendMessage(v37, v5, 8);
+                    sithThing_SetSector(v5, v19->surface->pAdjoin->sector, 0);
+                    v36 = _memcmp(&v72, &v5->position, sizeof(rdVector3)) != 0;
+                }
+                else
+                {
+                    // Added: noclip
+                    if (!(g_debugmodeFlags & DEBUGFLAG_NOCLIP) || pThing != sithPlayer_g_pLocalPlayerThing)
+                    {
+                        amount = v19->surface;
+                        if ( sithCollision_aThingSurfaceCollideResults[v5->type] )
+                            v36 = sithCollision_aThingSurfaceCollideResults[v5->type](v5, amount, v19);
+                        else
+                            v36 = sithCollision_HandleThingHitSurface(v5, amount, v19);
+                    }
+                    else {
+                        v36 = 0; // Added: noclip
+                    }
+                }
+                v16 = v36;
+                if ( v65 != 0.0 && v5->moveType == SITH_MT_PHYSICS) // Added: physics check
+                {
+                    rdVector_Scale3(&v5->field_268, &v5->physicsParams.vel, v65 * sithTime_g_frameTimeFlex);
+                    v65 = 0.0;
+                }
+                if ( v36 )
+                {
+                    break;
+                }
+            }
+            sithCollision_DecreaseStackLevel();
+
+            // Added: noclip
+            if ((g_debugmodeFlags & DEBUGFLAG_NOCLIP) && pThing == sithPlayer_g_pLocalPlayerThing) {
+                v16 = 0;
+            }
+
+            if ( v16 )
+            {
+                v64 = v19->distance + v64;
+                moveDist = 0.0;
+                if (!rdVector_IsZero3(&v5->field_268))
+                    moveDist = stdMath_ClipNearZero(rdVector_Normalize3(&direction, &v5->field_268));
+                ++v66;
+            }
+            else
+            {
+                v44 = v64 + moveDist;
+                rdVector_Copy3(&v5->position, &posCopy);
+                rdVector_ScaleAdd3Acc(&v5->position, &direction, moveDist);
+                rdVector_Zero3(&v5->field_268);
+                moveDist = 0.0;
+                v64 = v44;
+            }
+            if ( (v5->flags & 2) != 0 )
+                return v64;
+            if ( moveDist == 0.0 )
+                goto LABEL_78;
+        }
+    }
+
+    // Added: noclip
+    if (!(g_debugmodeFlags & DEBUGFLAG_NOCLIP) || pThing != sithPlayer_g_pLocalPlayerThing)
+    {
+        if ( v5->moveType == SITH_MT_PHYSICS )
+            sithPhysics_ResetThingMovement(v5);
+    }
+LABEL_81:
+    
+    v64 = stdMath_ClipNearZero(v64);
+    if ( v5->collide && v5->moveType == SITH_MT_PHYSICS && !sithIntersect_IsSphereInSector(&v5->position, 0.0, v5->sector) )
+    {
+        // Added: noclip
+        if (!(g_debugmodeFlags & DEBUGFLAG_NOCLIP) || pThing != sithPlayer_g_pLocalPlayerThing)
+        {
+            rdVector_Copy3(&v5->position, &posCopy);
+            rdVector_Copy3(&direction, &out);
+            sithThing_SetSector(v5, sectTmp, 0);
+            if ( v5->msecLifeLeft )
+                sithThing_DestroyThing(v5);
+        }
+        else {
+            for (int i = 0; i < sithWorld_g_pCurrentWorld->numSectors; i++)
+            {
+                int found = 0;
+                if (sithIntersect_IsSphereInSector(&v5->position, 0.0, &sithWorld_g_pCurrentWorld->aSectors[i]))
+                {
+                    found = 1;
+                    sithPlayer_bNoClippingRend = 0;
+                    sithThing_SetSector(v5, &sithWorld_g_pCurrentWorld->aSectors[i], 0);
+                    break;
+                }
+
+                if (!found)
+                {
+                    sithPlayer_bNoClippingRend = 1;
+                }
+            }
+        }
+    }
+
+    for ( i = v5->pAttachedThing; i; i = i->pNextAttachedThing )
+    {
+        if (!(i->attach_flags & SITH_ATTACH_NOMOVE)) continue;
+        rdMatrix_TransformVector34(&i->position, &i->field_4C, &v5->orient);
+        rdVector_Add3Acc(&i->position, &v5->position);
+        if ( i->sector != v5->sector )
+            sithThing_SetSector(i, v5->sector, 0);
+    }
+    if ( v5->moveType == SITH_MT_PHYSICS )
+    {
+        if ( v64 == 0.0 )
+            return 0.0;
+        if (!(flags & RAYCAST_40))
+        {
+            // A floor-sticking thing only re-finds/attaches to the floor when it's
+            // descending slowly, i.e. vel.z in [-2.0, 0.2].
+            if ( (v5->attach_flags) != 0 && !(v5->attach_flags & SITH_ATTACH_NOMOVE)
+              || (v5->physicsParams.flags & SITH_PF_FLOORSTICK) != 0
+              && (v5->physicsParams.vel.z >= -2.0 && v5->physicsParams.vel.z <= 0.2) )
+            {
+                sithPhysics_FindFloor(v5, 0);
+            }
+        }
+    }
+    return v64;
+}
+
+int sithCollision_HandleThingHitSurface(SithThing *pThing, SithSurface *pSurface, SithCollision *pCollision)
+{
+    SithThing *v3; // esi
+    flex_t a1a; // [esp+Ch] [ebp+4h]
+
+    v3 = pThing;
+    SITH_ASSERTREL(pThing != NULL); // Added: J3D asserts
+    SITH_ASSERTREL(pSurface != NULL);
+    if ( pThing->moveType != SITH_MT_PHYSICS )
+        return 0;
+    a1a = -rdVector_Dot3(&pCollision->hitNorm, &pThing->physicsParams.vel);
+
+    if ( !sithCollision_CollideHurt(pThing, &pCollision->hitNorm, pCollision->distance, pSurface->flags & SITH_SURFACE_80) )
+        return 0;
+
+    if ( (pSurface->flags & SITH_SURFACE_COG_LINKED) != 0 && (v3->flags & SITH_TF_INVULN) == 0 && pSurface->surfaceInfo.lastTouchedMs + 500 <= sithTime_g_clockTime )
+    {
+        pSurface->surfaceInfo.lastTouchedMs = sithTime_g_clockTime;
+        sithCog_SurfaceSendMessage(pSurface, v3, SITH_MESSAGE_TOUCHED);
+    }
+    if ( a1a > 0.15000001 )
+    {
+        if ( a1a > 1.0 )
+            a1a = 1.0;
+        if ( (pSurface->flags & SITH_SURFACE_METAL) != 0 )
+        {
+            sithSoundClass_PlayModeFirstEx(v3, SITH_SC_HITMETAL, a1a);
+            return 1;
+        }
+        sithSoundClass_PlayModeFirstEx(v3, SITH_SC_HITHARD, a1a);
+    }
+    return 1;
+}
+
+int sithCollision_ThingCollisionHandler(SithThing *pSrcThing, SithThing *pThingCollided, SithCollision *pCollision, int bSecondThingIsSource)
+{
+    SithThing *v4; // esi
+    SithThing *v5; // edi
+    flex_d_t v6; // st6
+    //char v9; // c0
+    flex_d_t v11; // st7
+    //char v14; // c0
+    flex_d_t v15; // st7
+    flex_t a3a; // [esp+0h] [ebp-38h]
+    rdVector3 a2; // [esp+14h] [ebp-24h] BYREF
+    rdVector3 forceVec; // [esp+20h] [ebp-18h] BYREF
+    rdVector3 v19; // [esp+2Ch] [ebp-Ch] BYREF
+    flex_t senderb; // [esp+3Ch] [ebp+4h]
+    flex_t pMeshCollided; // [esp+3Ch] [ebp+4h]
+    flex_t sendera; // [esp+3Ch] [ebp+4h]
+    flex_t a1a; // [esp+40h] [ebp+8h]
+
+    if ( bSecondThingIsSource )
+    {
+        v4 = pThingCollided;
+        v5 = pSrcThing;
+    }
+    else
+    {
+        v4 = pSrcThing;
+        v5 = pThingCollided;
+    }
+    a2 = pCollision->hitNorm;
+
+    if ( (v4->flags & SITH_TF_CAPTURED) != 0 && (v4->flags & SITH_TF_INVULN) == 0 )
+        sithCog_ThingSendMessage(v4, v5, SITH_MESSAGE_TOUCHED);
+    if ( (v5->flags & SITH_TF_CAPTURED) != 0 && (v4->flags & SITH_TF_INVULN) == 0 )
+        sithCog_ThingSendMessage(v5, v4, SITH_MESSAGE_TOUCHED);
+
+    if ( v4->moveType != SITH_MT_PHYSICS || v4->physicsParams.mass == 0.0 )
+    {
+        if ( v5->moveType != SITH_MT_PHYSICS || v5->physicsParams.mass == 0.0 )
+            return 1;
+        v11 = rdVector_Dot3(&v4->field_268, &a2);
+        v11 = stdMath_ClipNearZero(v11);
+        if ( v11 < 0.0 )
+        {
+            sendera = -v11 * 1.0001;
+            rdVector_Neg3(&v19, &a2);
+            v15 = sithCollision_MoveThing(v5, &v19, sendera, 0);
+            if ( v15 < sendera )
+            {
+                if ( (v4->flags & SITH_TF_NOIMPACTDAMAGE) == 0 )
+                {
+                    a1a = v15;
+                    a3a = (sendera - a1a) * 100.0;
+                    sithThing_DamageThing(v5, v4, a3a, SITH_DAMAGE_IMPACT);
+                }
+                rdVector_Zero3(&v4->field_268);
+            }
+            return 1;
+        }
+        return 0;
+    }
+    if ( v5->moveType == SITH_MT_PHYSICS && v5->physicsParams.mass != 0.0 )
+    {
+        v6 = rdVector_Dot3(&v5->physicsParams.vel, &a2) - rdVector_Dot3(&v4->physicsParams.vel, &a2);
+        v6 = stdMath_ClipNearZero(v6);
+        if ( v6 <= 0.0 )
+            return 0;
+
+        if ( (v4->physicsParams.flags & SITH_PF_SURFACEBOUNCE) == 0 )
+            v6 = v6 * 0.5;
+        if ( (v5->physicsParams.flags & SITH_PF_SURFACEBOUNCE) == 0 )
+            v6 = v6 * 0.5;
+        
+        // (2*mass^2) / (2*mass)
+        senderb = (v5->physicsParams.mass * v4->physicsParams.mass + v5->physicsParams.mass * v4->physicsParams.mass)
+                / (v5->physicsParams.mass + v4->physicsParams.mass);
+
+        rdVector_Scale3(&forceVec, &a2, v6 * senderb);
+        sithPhysics_ApplyForce(v4, &forceVec);
+        rdVector_Neg3Acc(&forceVec);
+        sithPhysics_ApplyForce(v5, &forceVec);
+        return sithCollision_CollideHurt(v4, &a2, pCollision->distance, 0);
+    }
+    pMeshCollided = 0.0f;
+    if (v4->moveType == SITH_MT_PHYSICS) // Added
+        pMeshCollided = -rdVector_Dot3(&v4->physicsParams.vel, &a2);
+    if ( !sithCollision_CollideHurt(v4, &a2, pCollision->distance, 0) )
+        return 0;
+    if ( pMeshCollided <= 0.15000001 )
+        return 1;
+    if ( pMeshCollided > 1.0 )
+        pMeshCollided = 1.0;
+    if ( (v5->flags & SITH_TF_METAL) != 0 )
+        sithSoundClass_PlayModeFirstEx(v4, SITH_SC_HITMETAL, pMeshCollided);
+    else
+        sithSoundClass_PlayModeFirstEx(v4, SITH_SC_HITHARD, pMeshCollided);
+    return 1;
+}
+
+int sithCollision_CollideHurt(SithThing *pThing, rdVector3 *pHitNorm, flex_t colDistance, int a4)
+{
+    int result; // eax
+    flex_d_t v10; // st6
+    flex_d_t v19; // st7
+    flex_d_t v22; // st7
+    flex_d_t v26; // st7
+    flex_d_t v31; // st6
+    flex_d_t v32; // st7
+    flex_d_t v33; // st5
+    flex_d_t v35; // st7
+    flex_d_t v36; // st7
+    flex_d_t v39; // st7
+    flex_d_t v40; // st7
+    flex_t v43; // [esp+8h] [ebp-4h]
+    flex_t a1a; // [esp+10h] [ebp+4h]
+    flex_t amount; // [esp+14h] [ebp+8h]
+
+    SITH_ASSERTREL(pThing); // Added: J3D assert
+    if ( pThing->moveType != SITH_MT_PHYSICS )
+        return 0;
+    amount = -rdVector_Dot3(&pThing->field_268, pHitNorm);
+    a1a = stdMath_ClipNearZero(amount);
+    if ( a1a <= 0.0 )
+        return 0;
+    v43 = 1.9;
+    if ( (pThing->physicsParams.flags & SITH_PF_SURFACEBOUNCE) == 0 )
+        v43 = 1.0001;
+    if ( colDistance == 0.0 && sithCollision_dword_8B4BE4 )
+    {
+        if ( amount <= 0.0 )
+        {
+            result = 0;
+        }
+        else
+        {
+            v10 = -rdVector_Dot3(&pThing->physicsParams.vel, pHitNorm);
+            rdVector_ScaleAdd3Acc(&pThing->field_268, pHitNorm, amount);
+            if ( v10 > 0.0 )
+            {
+                rdVector_ScaleAdd3Acc(&pThing->physicsParams.vel, pHitNorm, v10);
+            }
+            v19 = -rdVector_Dot3(pHitNorm, &sithCollision_collideHurtIdk);
+            rdVector_ScaleAdd3Acc(&sithCollision_collideHurtIdk, pHitNorm, v19);
+            rdVector_Normalize3Acc(&sithCollision_collideHurtIdk);
+            v22 = -rdVector_Dot3(&pThing->physicsParams.vel, &sithCollision_collideHurtIdk);
+            if ( v22 > 0.0 )
+            {
+                rdVector_ScaleAdd3Acc(&pThing->physicsParams.vel, &sithCollision_collideHurtIdk, v22);
+            }
+            v26 = -rdVector_Dot3(&pThing->field_268, &sithCollision_collideHurtIdk);
+            if ( v26 > 0.0 )
+            {
+                rdVector_ScaleAdd3Acc(&pThing->field_268, &sithCollision_collideHurtIdk, v26);
+            }
+            result = 1;
+        }
+    }
+    else
+    {
+        v31 = pThing->physicsParams.vel.y * pHitNorm->y;
+        v32 = pThing->physicsParams.vel.x * pHitNorm->x;
+        v33 = pThing->physicsParams.vel.z * pHitNorm->z;
+        sithCollision_dword_8B4BE4 = 1;
+        sithCollision_collideHurtIdk.x = pHitNorm->x;
+        sithCollision_collideHurtIdk.y = pHitNorm->y;
+        sithCollision_collideHurtIdk.z = pHitNorm->z;
+        v35 = -(v32 + v33 + v31);
+        if ( v35 > 0.0 )
+        {
+            v36 = v43 * v35;
+            rdVector_ScaleAdd3Acc(&pThing->physicsParams.vel, pHitNorm, v36);
+            if ( !a4 && v35 > 2.5 )
+            {
+                v39 = (v35 - 2.5) * (v35 - 2.5) * 45.0;
+                //printf("%f %f, %f %f %f\n", v39, v35, a1->physicsParams.vel.x, a1->physicsParams.vel.y, a1->physicsParams.vel.z);
+                if ( v39 > 1.0 )
+                {
+                    sithSoundClass_PlayModeRandom(pThing, SITH_SC_HITDAMAGED);
+                    sithThing_DamageThing(pThing, pThing, v39, SITH_DAMAGE_FALL);
+                }
+            }
+        }
+        v40 = v43 * a1a;
+        rdVector_ScaleAdd3Acc(&pThing->field_268, pHitNorm, v40);
+        result = 1;
+    }
+    return result;
+}
+
+int sithCollision_HasLOS(SithThing *pViewer, SithThing *pTarget, int flag)
+{
+    int searchFlags; // edi
+    int v4; // edi
+    SithCollision *v5; // ebp
+    flex_d_t v6; // st7
+    SithCollision *v7; // edx
+    SithCollision *v8; // ecx
+    SithThing *v10; // edx
+    int result; // eax
+    int v12; // [esp+10h] [ebp-10h]
+    rdVector3 a1a; // [esp+14h] [ebp-Ch] BYREF
+    flex_t a6; // [esp+2Ch] [ebp+Ch]
+
+    v12 = 1;
+    searchFlags = RAYCAST_2000 | RAYCAST_100 | RAYCAST_20 | RAYCAST_2;
+    if ( flag )
+        searchFlags = RAYCAST_2000 | RAYCAST_20 | RAYCAST_2;
+    SITH_ASSERTREL(pViewer && pTarget); // Added: J3D assert
+    rdVector_Sub3(&a1a, &pTarget->position, &pViewer->position);
+    a6 = rdVector_Normalize3Acc(&a1a);
+    sithCollision_SearchForCollisions(pViewer->sector, 0, &pViewer->position, &a1a, a6, 0.0, searchFlags);
+    v4 = sithCollision_searchStackIdx;
+    v5 = sithCollision_aCollisions[sithCollision_searchStackIdx].collisions;
+    while ( 1 )
+    {
+        v6 = 3.4e38;
+        v7 = 0;
+        v8 = v5;
+        for (int i = 0; i < sithCollision_aNumStackCollisions[v4]; i++)
+        {
+            if ( !v8->bEnumerated )
+            {
+                if ( v6 <= v8->distance )
+                {
+                    if ( v6 == v8->distance 
+                        && (v7->type & (SITHCOLLISION_THINGTOUCH|SITHCOLLISION_THINGCROSS)) 
+                        && (v8->type & SITHCOLLISION_THINGADJOINCROSS))
+                        v7 = v8;
+                }
+                else
+                {
+                    v6 = v8->distance;
+                    v7 = v8;
+                }
+            }
+            ++v8;
+        }
+        if ( v7 )
+        {
+            v7->bEnumerated = 1;
+        }
+        else
+        {
+            sithCollision_aNumStackCollisions[v4] = 0;
+            sithCollision_aNumSearchedSectors[v4] = 0;
+        }
+        if ( !v7 )
+            break;
+        if ( (v7->type & SITHCOLLISION_THING) != 0 )
+        {
+            v10 = v7->pThingCollided;
+            if ( v10 == pTarget )
+            {
+                result = 1;
+                sithCollision_searchStackIdx = v4 - 1;
+                return result;
+            }
+            if ( v10 == pViewer )
+                continue;
+        }
+        v12 = 0;
+        break;
+    }
+    result = v12;
+    sithCollision_searchStackIdx = v4 - 1;
+    return result;
+}
+
+void sithCollision_sub_4E77A0(SithThing *pThing, rdMatrix34 *pOrient)
+{
+    SithThing *v5; // edi
+    rdVector3 a2a; // [esp+10h] [ebp-6Ch] BYREF
+    rdMatrix34 out; // [esp+1Ch] [ebp-60h] BYREF
+    rdMatrix34 mat1; // [esp+4Ch] [ebp-30h] BYREF
+    flex_t a1a; // [esp+84h] [ebp+8h]
+
+    if ( pThing->pAttachedThing )
+    {
+        rdMatrix_Normalize34(pOrient);
+        rdVector_Copy3(&pOrient->scale, &pThing->position);
+        rdVector_Copy3(&pThing->orient.scale, &pThing->position);
+        rdMatrix_InvertOrtho34(&mat1, &pThing->orient);
+        v5 = pThing->pAttachedThing;
+        while ( v5 )
+        {
+            rdVector_Copy3(&v5->orient.scale, &v5->position);
+            rdMatrix_Multiply34(&out, &mat1, &v5->orient);
+            rdMatrix_PostMultiply34(&out, pOrient);
+            rdVector_Sub3(&a2a, &out.scale, &v5->position);
+            a1a = rdVector_Normalize3Acc(&a2a);
+            rdVector_Zero3(&out.scale);
+            if ( a1a != 0.0 )
+            {
+                sithCollision_MoveThing(v5, &a2a, a1a, RAYCAST_40);
+            }
+            sithCollision_sub_4E77A0(v5, &out);
+            if ( v5->moveType == SITH_MT_PHYSICS )
+            {
+                v5->physicsParams.flags &= ~SITH_PF_100;
+            }
+            v5 = v5->pNextAttachedThing;
+        }
+    }
+    else if ( (((jkPlayer_currentTickIdx & 0xFF) + (pThing->idx & 0xFF)) & 7) == 0 )
+    {
+        rdMatrix_Normalize34(pOrient);
+    }
+    rdVector_Zero3(&pOrient->scale);
+    stdPlatform_Memcpy32(&pThing->orient, pOrient, sizeof(pThing->orient)); // Added: word-safe (aThings may be in extram)
+}
+
+int sithCollision_ParticleAndActorCollisionHandler(SithThing *pSrcThing, SithThing *pThingCollided, SithCollision *pCollision, int bSecondThingIsSource)
+{
+    int result; // eax
+    flex_t mass; // [esp+14h] [ebp+4h]
+
+    flex_t tmp = 0.0; // Added 0.0, original game overwrites &searchEnt...
+
+    // Added: check move type
+    mass = (pSrcThing->moveType == SITH_MT_PHYSICS) ? pSrcThing->physicsParams.mass : (flex_t)0.0;
+
+    if ( bSecondThingIsSource )
+        return sithCollision_ThingCollisionHandler(pSrcThing, pThingCollided, pCollision, bSecondThingIsSource);
+
+    if ( pSrcThing->moveType == SITH_MT_PHYSICS )
+        tmp = -rdVector_Dot3(&pCollision->hitNorm, &pSrcThing->physicsParams.vel);
+
+    if (sithCollision_ThingCollisionHandler(pSrcThing, pThingCollided, pCollision, 0))
+    {
+        if ( tmp > 0.25 )
+        {
+            sithThing_DamageThing(pThingCollided, pSrcThing, mass * 0.3 * tmp, SITH_DAMAGE_IMPACT);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+// Find nearest collision result from search
+static SithCollision* sithCollision_PopClosest()
+{
+    SithCollision *best = NULL;
+    flex_t bestDist = 3.4e38f;
+    int numResults = sithCollision_aNumStackCollisions[sithCollision_searchStackIdx];
+
+    for (int i = 0; i < numResults; i++)
+    {
+        SithCollision *entry = &sithCollision_aCollisions[sithCollision_searchStackIdx].collisions[i];
+        if ( !entry->bEnumerated )
+        {
+            if ( bestDist <= entry->distance )
+            {
+                if ( bestDist == entry->distance && best && (best->type & 0x18) && (entry->type & 4) )
+                    best = entry;
+            }
+            else
+            {
+                bestDist = entry->distance;
+                best = entry;
+            }
+        }
+    }
+    return best;
+}
+
+SithThing* sithCollision_RaycastFromCamera(rdVector3 *pos)
+{
+    rdVector3 dir;
+    rdVector3 camPos;
+
+    if ( !sithCamera_g_pCurCamera->sector )
+        return NULL;
+
+    camPos.x = pos->x - sithCamera_g_pCurCamera->offset.x;
+    camPos.y = sithCamera_g_pCurCamera->lookPos.y;
+    camPos.z = sithCamera_g_pCurCamera->offset.z - pos->y;
+
+    rdMatrix_TransformPoint34Acc(&camPos, &sithCamera_g_pCurCamera->orient);
+
+    rdVector_Sub3(&dir, &camPos, &sithCamera_g_pCurCamera->lookPos);
+    rdVector_Normalize3Acc(&dir);
+
+    sithCollision_SearchForCollisions(sithCamera_g_pCurCamera->sector, NULL,
+        &sithCamera_g_pCurCamera->lookPos, &dir, 100.0f, 0.0f, 0x103);
+
+    SithCollision *best = sithCollision_PopClosest();
+    SithThing *result = NULL;
+    if ( best )
+    {
+        best->bEnumerated = 1;
+        result = best->pThingCollided;
+    }
+
+    sithCollision_aNumStackCollisions[sithCollision_searchStackIdx] = 0;
+    sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx] = 0;
+    sithCollision_searchStackIdx--;
+    return result;
+}
+
+SithThing* sithCollision_RaycastSector(SithSector *sector, rdVector3 *startPos, rdVector3 *dir, flex_t dist, flex_t radius, uint32_t *pHitType)
+{
+    sithCollision_SearchForCollisions(sector, NULL, startPos, dir, dist, radius, 0x103);
+
+    SithCollision *best = sithCollision_PopClosest();
+    SithThing *result = NULL;
+    if ( best )
+    {
+        best->bEnumerated = 1;
+        *pHitType = best->type;
+        result = best->pThingCollided;
+    }
+
+    sithCollision_aNumStackCollisions[sithCollision_searchStackIdx] = 0;
+    sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx] = 0;
+    sithCollision_searchStackIdx--;
+    return result;
+}
+
+int sithCollision_CheckPathClear(SithSector *sector, rdVector3 *startPos, rdVector3 *endPos, flex_t radius)
+{
+    rdVector3 dir;
+    rdVector_Sub3(&dir, endPos, startPos);
+    flex_t dist = rdVector_Normalize3Acc(&dir);
+
+    sithCollision_SearchForCollisions(sector, NULL, startPos, &dir, dist, radius, 0x12A);
+
+    SithCollision *best = sithCollision_PopClosest();
+    int result = 1;
+    if ( best )
+    {
+        best->bEnumerated = 1;
+        result = 0;
+    }
+
+    sithCollision_aNumStackCollisions[sithCollision_searchStackIdx] = 0;
+    sithCollision_aNumSearchedSectors[sithCollision_searchStackIdx] = 0;
+    sithCollision_searchStackIdx--;
+    return result;
+}

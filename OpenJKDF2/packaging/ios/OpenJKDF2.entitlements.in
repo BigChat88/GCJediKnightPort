@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Generated from packaging/ios/OpenJKDF2.entitlements.in when IOS_TEAM_ID is
+	     set (see cmake_modules/target_ios_all.cmake). A device install checks the
+	     signed entitlements against the embedded provisioning profile: the
+	     application-identifier must be <team>.<bundle id> and must be covered by
+	     the profile's own application-identifier (a wildcard profile's
+	     "<team>.*" covers any bundle id). Mismatch here is what produces
+	     "Please verify that your device's clock is properly set" and other
+	     misleading install errors. -->
+	<key>application-identifier</key>
+	<string>@IOS_TEAM_ID@.@IOS_BUNDLE_ID@</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>@IOS_TEAM_ID@</string>
+	<!-- Lets lldb/Xcode attach, and is what makes this a development build. -->
+	<key>get-task-allow</key>
+	<true/>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>@IOS_TEAM_ID@.@IOS_BUNDLE_ID@</string>
+	</array>
+</dict>
+</plist>
