@@ -184,6 +184,7 @@ int sithSurface_ReadSurfacesListText(SithWorld *pWorld)
     pWorld->numSurfaces = numSurfaces;
 #ifdef TARGET_GAMECUBE
     sithSurface_gcbSkyColorKnown = 0; // Added: this level's sky, not the previous one's
+    { extern void std3D_GcResetSkyFog(void); std3D_GcResetSkyFog(); }
 #endif
     for (int32_t v14 = 0; v14 < numSurfaces; v14++)
     {

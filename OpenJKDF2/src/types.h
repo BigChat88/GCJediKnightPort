@@ -704,7 +704,7 @@ typedef struct rdProcEntry
     int32_t y_max_related;
     uint32_t vertexColorMode;
 #ifdef TARGET_GAMECUBE
-    uint32_t gcEffect; // Added: 1 particle, 2 fully lit sprite (drawn softer/glowing), 3 sky (no fog)
+    uint32_t gcEffect; // Added: 1 particle, 2 fully lit sprite (drawn softer/glowing), 3 ceiling sky, 4 horizon sky (no fog)
 #endif
 } rdProcEntry;
 

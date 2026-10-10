@@ -418,8 +418,10 @@ int rdCache_SendFaceListToHardware()
             flags_idk_ |= RDCACHE_GC_FLAG_PARTICLE;
         if ((active_6c->gcEffect == 1 || active_6c->gcEffect == 2) && active_6c->lightingMode == RD_LIGHTMODE_FULLYLIT)
             flags_idk_ |= RDCACHE_GC_FLAG_GLOW;
-        if (active_6c->gcEffect == 3)
+        if (active_6c->gcEffect == 3 || active_6c->gcEffect == 4)
             flags_idk_ |= RDCACHE_GC_FLAG_NOFOG; // sky
+        if (active_6c->gcEffect == 4)
+            flags_idk_ |= RDCACHE_GC_FLAG_HORIZON;
 #endif
         if ( (active_6c->type & RD_FF_TEX_TRANSLUCENT) != 0 )
         {

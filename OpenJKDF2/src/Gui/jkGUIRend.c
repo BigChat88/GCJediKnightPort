@@ -1753,8 +1753,19 @@ void jkGuiRend_CheckBoxDraw(jkGuiElement *element, jkGuiMenu *menu, tVBuffer *vb
     }
 }
 
+#ifdef TARGET_GAMECUBE
+// Added: a checkbox changes once per press of A. Holding A on one flipped it on
+// and off. Re-armed by jkGuiRend_UpdateController once A is let go.
+static int jkGuiRend_gcCheckboxArmed = 1;
+#endif
+
 int jkGuiRend_DrawClickableAndUpdatebool(jkGuiElement *element, jkGuiMenu *menu, int32_t a, int32_t b, BOOL c)
 {
+#ifdef TARGET_GAMECUBE
+    if (!jkGuiRend_gcCheckboxArmed)
+        return 0;
+    jkGuiRend_gcCheckboxArmed = 0;
+#endif
     element->selectedTextEntry = element->selectedTextEntry == 0;
     jkGuiRend_UpdateAndDrawClickable(element, menu, 1);
     return 0;
@@ -3122,6 +3133,26 @@ void jkGuiRend_UpdateController()
     lastJoyYUp = joyYUp;
 
     valB1 = stdControl_ReadKey(KEY_JOY1_B1, &val);
+#ifdef TARGET_GAMECUBE
+    if (!valB1)
+        jkGuiRend_gcCheckboxArmed = 1;
+#endif
+
+    // Added: B (back) and X (accept) act on the press only, like A; they used to
+    // act every frame they were held. And a button still held from the menu
+    // before is ignored until it's let go: backing out of a menu (B, or A on its
+    // back button) went straight on into the menu underneath, e.g. back from the
+    // difficulty screen re-entered single player.
+    static int lastB2 = 0, lastB3 = 0;
+    static jkGuiMenu* pGcLastMenu = NULL;
+    int valB2 = (stdControl_ReadKey(KEY_JOY1_B2, &val) && val);
+    int valB3 = (stdControl_ReadKey(KEY_JOY1_B3, &val) && val);
+    if (jkGuiRend_activeMenu != pGcLastMenu) {
+        pGcLastMenu = jkGuiRend_activeMenu;
+        lastB1 = valB1;
+        lastB2 = valB2;
+        lastB3 = valB3;
+    }
 
     extern jkGuiMenu jkGuiSaveLoad_menu;
     extern jkGuiMenu jkGuiDialog_OkCancel_menu;
@@ -3172,11 +3203,14 @@ void jkGuiRend_UpdateController()
     }
     lastB1 = valB1;
 
-    if (stdControl_ReadKey(KEY_JOY1_B2, &val) && val) {
+    int bPressB2 = valB2 && !lastB2, bPressB3 = valB3 && !lastB3;
+    lastB2 = valB2;
+    lastB3 = valB3;
+    if (bPressB2) {
         jkGuiRend_WindowHandler(0, WM_KEYFIRST, VK_ESCAPE, 0, 0);
         stdPlatform_Printf("b\n");
     }
-    if (stdControl_ReadKey(KEY_JOY1_B3, &val) && val) {
+    if (bPressB3) {
         //jkGuiRend_WindowHandler(0, WM_KEYFIRST, VK_TAB, 0, 0);
         stdPlatform_Printf("x\n");
         if (jkGuiRend_activeMenu && jkGuiRend_activeMenu->pReturnKeyShortcutElement) {

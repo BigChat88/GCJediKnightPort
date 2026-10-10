@@ -70,14 +70,33 @@ static uint32_t gcInput_ScriptButtons(void)
 }
 #endif // GC_INPUT_SCRIPT
 
+// A button counts as let go only after it has read up for this long. It's read
+// many times a frame, and a read can come back with nothing held while the button
+// still is: in the menus a held A or B then acted again and again (a checkbox
+// flipping on and off, back going through two menus).
+#define GCINPUT_RELEASE_MS 50
+
 uint32_t gcInput_ButtonsHeld(void)
 {
+    static uint32_t held = 0;
+    static u64 aLastDown[32];
+
     PAD_ScanPads();
-    uint32_t buttons = PAD_ButtonsHeld(0);
+    uint32_t raw = PAD_ButtonsHeld(0);
 #ifdef GC_INPUT_SCRIPT
-    buttons |= gcInput_ScriptButtons();
+    raw |= gcInput_ScriptButtons();
 #endif
-    return buttons;
+    u64 now = gettime();
+    for (int i = 0; i < 32; i++) {
+        uint32_t bit = 1u << i;
+        if (raw & bit) {
+            held |= bit;
+            aLastDown[i] = now;
+        }
+        else if ((held & bit) && diff_msec(aLastDown[i], now) >= GCINPUT_RELEASE_MS)
+            held &= ~bit;
+    }
+    return held;
 }
 
 int gcInput_CheatComboPressed(void)

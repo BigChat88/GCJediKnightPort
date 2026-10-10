@@ -197,6 +197,18 @@ int jkGuiSaveLoad_DeleteOnClick(jkGuiElement *element, jkGuiMenu *menu, int32_t 
                     jkGuiSaveLoad_aElements[11].bIsVisible = 1;
                 jkGuiSaveLoad_PopulateInfo(1);
                 element->bIsVisible = jkGuiSaveLoad_numEntries > 0;
+#ifdef TARGET_GAMECUBE
+                // Added: the full repaint doesn't clear the background here, so a
+                // button just hidden (Delete, OK after the last save) stayed drawn.
+                // Redrawing a hidden element puts the background back over it; the
+                // focus goes to Cancel if it was on one of them.
+                if (!element->bIsVisible || !jkGuiSaveLoad_aElements[11].bIsVisible) {
+                    jkGuiRend_UpdateAndDrawClickable(element, menu, 1);
+                    jkGuiRend_UpdateAndDrawClickable(&jkGuiSaveLoad_aElements[11], menu, 1);
+                    if (menu->focusedElement && !menu->focusedElement->bIsVisible)
+                        menu->focusedElement = &jkGuiSaveLoad_aElements[12];
+                }
+#endif
             }
             jkGuiRend_Paint(menu);
         }

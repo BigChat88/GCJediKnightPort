@@ -66,6 +66,7 @@ static void (*rdCache_DrawFaceZ)(rdProcEntry* face) = (void*)rdCache_DrawFaceZ_A
 // Added: rdTri flags for the GameCube renderer (see rdCache_SendFaceListToHardware)
 #define RDCACHE_GC_FLAG_PARTICLE 0x40000
 #define RDCACHE_GC_FLAG_GLOW     0x80000
-#define RDCACHE_GC_FLAG_NOFOG    0x100000
+#define RDCACHE_GC_FLAG_NOFOG    0x100000 // sky
+#define RDCACHE_GC_FLAG_HORIZON  0x200000 // horizon sky (the fog takes its colour)
 
 #endif // _RDCACHE_H

@@ -2136,14 +2136,14 @@ void sithRender_RenderSectors()
                 {
                     sithRenderSky_HorizonFaceToPlane(procEntry, &v65->surfaceInfo, num_vertices);
 #ifdef TARGET_GAMECUBE
-                    procEntry->gcEffect = 3; // Added: sky, kept out of the optional fog (std3D)
+                    procEntry->gcEffect = 4; // Added: horizon sky, kept out of the optional fog (std3D)
 #endif
                 }
                 else if (UNLIKELY(flags & SITH_SURFACE_CEILING_SKY))
                 {
                     sithRenderSky_CeilingFaceToPlane(procEntry, &v65->surfaceInfo, sithRender_aClipVertices, num_vertices);
 #ifdef TARGET_GAMECUBE
-                    procEntry->gcEffect = 3;
+                    procEntry->gcEffect = 3; // ceiling sky
 #endif
                 }
                 v57 = v65->surfaceInfo.face.type;

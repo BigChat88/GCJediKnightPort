@@ -28,8 +28,10 @@ int  std3D_GcGetFog(void);
 void std3D_GcSetFog(int b);
 int  std3D_GcGetHandIcon(void);
 void std3D_GcSetHandIcon(int b);
+int  std3D_GcGetGlow(void);
+void std3D_GcSetGlow(int b);
 
-static jkGuiElement jkGuiDisplay_aElements[14] = {
+static jkGuiElement jkGuiDisplay_aElements[15] = {
     { ELEMENT_TEXT,        0,            0, NULL,                   3, {0, 410, 640, 20},   1, 0, NULL,                        0, 0, 0, {0}, 0},
     { ELEMENT_TEXT,        0,            6, "GUI_SETUP",            3, {20, 20, 600, 40},   1, 0, NULL,                        0, 0, 0, {0}, 0},
     { ELEMENT_TEXTBUTTON,  GUI_GENERAL,  2, "GUI_GENERAL",          3, {20, 80, 120, 40},   1, 0, "GUI_GENERAL_HINT",          0, 0, 0, {0}, 0},
@@ -48,6 +50,8 @@ static jkGuiElement jkGuiDisplay_aElements[14] = {
     // 11, 12
     { ELEMENT_CHECKBOX,    0,            0, (const char*)u"Distance fog", 0, {40, 210, 400, 20}, 1, 0, (const char*)u"Far away things fade into the colour of the sky.", 0, 0, 0, {0}, 0},
     { ELEMENT_CHECKBOX,    0,            0, (const char*)u"Action hand icon", 0, {40, 240, 400, 20}, 1, 0, (const char*)u"Shows a hand when something in front of you can be used.", 0, 0, 0, {0}, 0},
+    // 13
+    { ELEMENT_CHECKBOX,    0,            0, (const char*)u"Glow effect", 0, {40, 270, 400, 20}, 1, 0, (const char*)u"Bright lights, sabers and blasts get a soft halo.", 0, 0, 0, {0}, 0},
 
     { ELEMENT_END,         0,            0, NULL,                   0, {0},                 0, 0, NULL,                        0, 0, 0, {0}, 0},
 };
@@ -71,6 +75,7 @@ int jkGuiDisplay_Show()
     jkGuiDisplay_aElements[9].boxChecked = gcSystem_IsProgressive();
     jkGuiDisplay_aElements[11].boxChecked = std3D_GcGetFog();
     jkGuiDisplay_aElements[12].boxChecked = std3D_GcGetHandIcon();
+    jkGuiDisplay_aElements[13].boxChecked = std3D_GcGetGlow();
 
     jkGui_sub_412E20(&jkGuiDisplay_menu, 102, 104, 102);
     jkGuiRend_MenuSetReturnKeyShortcutElement(&jkGuiDisplay_menu, &jkGuiDisplay_aElements[7]);
@@ -89,6 +94,8 @@ int jkGuiDisplay_Show()
             std3D_GcSetFog(jkGuiDisplay_aElements[11].boxChecked != 0);
         if ((jkGuiDisplay_aElements[12].boxChecked != 0) != std3D_GcGetHandIcon())
             std3D_GcSetHandIcon(jkGuiDisplay_aElements[12].boxChecked != 0);
+        if ((jkGuiDisplay_aElements[13].boxChecked != 0) != std3D_GcGetGlow())
+            std3D_GcSetGlow(jkGuiDisplay_aElements[13].boxChecked != 0);
     }
     return clicked;
 }
