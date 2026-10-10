@@ -80,20 +80,9 @@ load-time work (GOB ordering, the ARAM read cache), memory card saves, video
 modes and the headless Dolphin test image. `dev.sh` is the build-and-boot loop
 used during development (needs both Docker images).
 
-## Versioning and releases
-
-`VERSION` holds the version (semver). It is compiled into the engine (printed at
-boot) and names the release. Every push to `main` builds the engine on GitHub
-Actions (`.github/workflows/release.yml`) and publishes the `vX.Y.Z` pre-release
-with the bundle and a `-debug.zip` (`.elf` + `.map`, to symbolicate crash dumps
-from real hardware). Pull requests only build. Bump `VERSION` for each release;
-a push without a bump refreshes the existing release.
-
 ## Credits
 
 * [OpenJKDF2](https://github.com/shinyquagsire23/OpenJKDF2) by shinyquagsire23
   and contributors -- the engine this port is built on.
 * [devkitPro](https://devkitpro.org/) -- devkitPPC, libogc and libfat.
-* Star Wars Jedi Knight: Dark Forces II and Mysteries of the Sith (C) Lucasfilm
-  Ltd. This is an unofficial fan project, not affiliated with or endorsed by
-  Lucasfilm or Disney. See [LICENSE](LICENSE).
+
