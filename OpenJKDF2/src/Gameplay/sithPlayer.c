@@ -303,7 +303,17 @@ void sithPlayer_debug_loadauto(SithThing *player)
     {
         stdString_snprintf(v1, 128, "%s%s", "_JKAUTO_", sithGamesave_AutosaveMapName()); // Added: single-slot on DC
         stdFnames_ChangeExt(v1, "jks");
+#ifdef TARGET_GAMECUBE
+        // Added: no autosave to go back to (it didn't fit in memory and was
+        // dropped, see sithGamesave_Process): respawn in the level instead of
+        // staying dead.
+        if (!sithGamesave_Restore(v1, 0, 0)) {
+            stdPlatform_Printf("sithPlayer: no autosave, respawning\n");
+            sithPlayer_NewPlayer(player);
+        }
+#else
         sithGamesave_Restore(v1, 0, 0);
+#endif
     }
     sithSoundMixer_ResumeMusic(1);
     player->type = SITH_THING_PLAYER;

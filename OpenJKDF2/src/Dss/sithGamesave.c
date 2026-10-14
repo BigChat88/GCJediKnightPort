@@ -1,3 +1,4 @@
+#include <errno.h>
 #include "sithGamesave.h"
 
 #ifdef TARGET_DREAMCAST
@@ -138,13 +139,19 @@ int sithGamesave_Restore(char *saveFname, int debugNextCheckpoint, int a3)
         LEC_PATH_SEPARATOR_CHR, playerName, LEC_PATH_SEPARATOR_CHR, saveFname
     );
 
+#ifdef TARGET_GAMECUBE
+    errno = 0;
+#endif
     int bOpened = stdConffile_OpenReadBytesBypass(fpath);
 #ifdef TARGET_GAMECUBE
+    // A save that isn't there (no autosave yet, or one thrown away because it was
+    // cut short) is just missing: only a failure to read one is retried.
+    int bMissing = !bOpened && errno == ENOENT;
     // Added: opening a save slot unpacks it from the memory card (~380 KiB). In a
     // level with little memory free that failed and loading did nothing: give back
     // what can be reloaded and try again; failing that, go ahead from inside a
     // level anyway (sithGamesave_RestoreFile closes the level and retries).
-    if (!bOpened) {
+    if (!bOpened && !bMissing) {
         extern void std3D_GcReleaseMemory(void);
         extern uint32_t sithSound_GcFreeAllIdle(void);
         std3D_GcReleaseMemory();
@@ -682,6 +689,22 @@ int sithGamesave_Process()
         if ( sithGamesave_func1 )
             sithGamesave_func1();
         stdConffile_CloseWrite();
+#ifdef TARGET_GAMECUBE
+        // Added: an autosave, checkpoint or quicksave cut short by a lack of
+        // memory is thrown away rather than kept: loading it would fail ("could
+        // not load level") when the player dies. (Saves from the menu check this
+        // themselves, jkGUISaveLoad.) Dying then respawns in the level instead.
+        if (!sithGamesave_dword_835914) {
+            extern int gcDvd_GcTakeWriteFailure(void);
+            if (gcDvd_GcTakeWriteFailure()) {
+                stdPlatform_Printf("sithGamesave: %s cut short (out of memory), dropped\n", sithGamesave_aCurFilename);
+                sithConsole_PrintString("Not enough memory for the autosave");
+                sithMessage_g_outputstream = multiplayerFlagsSave;
+                sithGamesave_state = SITH_GS_NONE;
+                return 0;
+            }
+        }
+#endif
         _strncpy(sithGamesave_autosave_fname, stdFnames_FindMedName(sithGamesave_aCurFilename), 0x7Fu);
         sithGamesave_autosave_fname[127] = 0;
         if ( sithGamesave_dword_835914 )

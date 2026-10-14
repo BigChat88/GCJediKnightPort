@@ -1030,6 +1030,8 @@ static void gcDvd_NotifyWrite(void)
 // short save went on to the memory card: "could not load level" from then on
 // (saving in a level with little memory free, e.g. level 4). The game checks
 // this after writing a save (gcDvd_GcTakeWriteFailure) and throws the write away.
+static int gcOv_IsVolatile(const gcOvNode* n);
+
 int gcDvd_GcTakeWriteFailure(void)
 {
     gcOvNode* n = gcDvd_pFailedNode;
@@ -1042,8 +1044,12 @@ int gcDvd_GcTakeWriteFailure(void)
         n->bChanged = 0;
         n->bLazy = 1;
     }
+    else if (gcOv_IsVolatile(n))
+        gcOv_Remove(n); // a cut-short autosave / quicksave: none is better
     else
-        gcOv_Remove(n);
+        // Settings or the player profile: never thrown away (it would lose them
+        // all); what was written stays, and the next write replaces it.
+        printf("gcDvd: %s was cut short (out of memory), kept\n", n->path);
     return 1;
 }
 

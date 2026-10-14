@@ -303,7 +303,12 @@ int gcExfat_FindImage(const DISC_INTERFACE* iface, const char* id6, char* pPathO
         gcExfat_pSector = (uint8_t*)memalign(32, GCEXFAT_SECTOR);
         gcExfat_pFat = (uint8_t*)memalign(32, GCEXFAT_SECTOR);
         gcExfat_pBounce = (uint8_t*)memalign(32, GCEXFAT_BOUNCE);
-        if (!gcExfat_pSector || !gcExfat_pFat || !gcExfat_pBounce) return 0;
+        if (!gcExfat_pSector || !gcExfat_pFat || !gcExfat_pBounce) {
+            // All or none: a later call checks only the first one.
+            free(gcExfat_pSector); free(gcExfat_pFat); free(gcExfat_pBounce);
+            gcExfat_pSector = gcExfat_pFat = gcExfat_pBounce = NULL;
+            return 0;
+        }
     }
 
     gcExfat_pIface = iface;
