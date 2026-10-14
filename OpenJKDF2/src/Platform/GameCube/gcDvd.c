@@ -102,12 +102,17 @@ typedef struct gcOvNode {
     struct gcOvNode* next;
     char     path[GCDVD_MAX_PATH];
     int      isDir;
-    uint8_t* data;
+    // Contents, in pieces of GCDVD_DATA_CHUNK bytes (the last one may be smaller):
+    // a save is ~380 KiB, and mid-level the heap had no single block that big.
+    uint8_t** chunks;
+    uint32_t numChunks;
+    uint32_t lastCap;    // bytes allocated for the last piece
     uint32_t size;
-    uint32_t cap;
+    uint32_t cap;        // bytes allocated in all
     int      slot;       // >0: a save slot kept in its own memory card file (gcCard)
     int      bLazy;      // slot file whose data is still on the card (loaded on open)
     int      bChanged;   // contents changed since gcCard last persisted them
+    uint32_t cardSize;   // slot: size of the copy on the card (to fall back to it)
 } gcOvNode;
 
 typedef struct gcDvdFile {
@@ -887,6 +892,19 @@ static void gcDvd_FillFstStat(uint32_t idx, struct stat* st)
 
 // --- Overlay -----------------------------------------------------------------------
 
+static gcOvNode* gcDvd_pFailedNode = NULL; // see gcDvd_GcTakeWriteFailure
+
+static void gcOv_FreeData(gcOvNode* n)
+{
+    for (uint32_t i = 0; i < n->numChunks; i++)
+        free(n->chunks[i]);
+    free(n->chunks);
+    n->chunks = NULL;
+    n->numChunks = 0;
+    n->lastCap = 0;
+    n->cap = 0;
+}
+
 static gcOvNode* gcOv_Find(const char* norm)
 {
     for (gcOvNode* n = gcOv_pHead; n; n = n->next)
@@ -909,26 +927,74 @@ static gcOvNode* gcOv_Create(const char* norm, int isDir)
 static void gcOv_Remove(gcOvNode* node)
 {
     gcOvNode* prev = NULL;
+    if (gcDvd_pFailedNode == node) gcDvd_pFailedNode = NULL;
     for (gcOvNode* n = gcOv_pHead; n; prev = n, n = n->next) {
         if (n != node) continue;
         if (prev) prev->next = n->next; else gcOv_pHead = n->next;
         if (gcOv_pTail == n) gcOv_pTail = prev;
-        free(n->data);
+        gcOv_FreeData(n);
         free(n);
         return;
     }
 }
 
+// Room for size bytes: the last piece grows (doubling, up to a whole piece),
+// then whole new pieces are added. No block is ever bigger than a piece.
 static int gcOv_Reserve(gcOvNode* n, uint32_t size)
 {
-    if (size <= n->cap) return 1;
-    uint32_t cap = n->cap ? n->cap : 1024;
-    while (cap < size) cap *= 2;
-    uint8_t* data = (uint8_t*)realloc(n->data, cap);
-    if (!data) return 0;
-    n->data = data;
-    n->cap = cap;
+    while (n->cap < size) {
+        uint32_t want = size - n->cap;
+        if (n->numChunks && n->lastCap < GCDVD_DATA_CHUNK) {
+            uint32_t nc = n->lastCap * 2;
+            while (nc < n->lastCap + want && nc < GCDVD_DATA_CHUNK) nc *= 2;
+            if (nc > GCDVD_DATA_CHUNK) nc = GCDVD_DATA_CHUNK;
+            uint8_t* c = (uint8_t*)realloc(n->chunks[n->numChunks - 1], nc);
+            if (!c) return 0;
+            n->chunks[n->numChunks - 1] = c;
+            n->cap += nc - n->lastCap;
+            n->lastCap = nc;
+        }
+        else {
+            uint32_t nc = 1024;
+            while (nc < want && nc < GCDVD_DATA_CHUNK) nc *= 2;
+            uint8_t** arr = (uint8_t**)realloc(n->chunks, (n->numChunks + 1) * sizeof(uint8_t*));
+            if (!arr) return 0;
+            n->chunks = arr;
+            uint8_t* c = (uint8_t*)malloc(nc);
+            if (!c) return 0;
+            n->chunks[n->numChunks++] = c;
+            n->cap += nc;
+            n->lastCap = nc;
+        }
+    }
     return 1;
+}
+
+// Copies between a node's pieces and a flat buffer (within cap).
+static void gcOv_CopyIn(gcOvNode* n, uint32_t off, const uint8_t* src, uint32_t len)
+{
+    while (len) {
+        uint32_t io = off % GCDVD_DATA_CHUNK;
+        uint32_t k = GCDVD_DATA_CHUNK - io;
+        if (k > len) k = len;
+        if (src) memcpy(n->chunks[off / GCDVD_DATA_CHUNK] + io, src, k), src += k;
+        else memset(n->chunks[off / GCDVD_DATA_CHUNK] + io, 0, k);
+        off += k;
+        len -= k;
+    }
+}
+
+static void gcOv_CopyOut(const gcOvNode* n, uint32_t off, uint8_t* dst, uint32_t len)
+{
+    while (len) {
+        uint32_t io = off % GCDVD_DATA_CHUNK;
+        uint32_t k = GCDVD_DATA_CHUNK - io;
+        if (k > len) k = len;
+        memcpy(dst, n->chunks[off / GCDVD_DATA_CHUNK] + io, k);
+        dst += k;
+        off += k;
+        len -= k;
+    }
 }
 
 static int gcDvd_IsDirPath(const char* norm)
@@ -958,6 +1024,27 @@ static int gcDvd_ParentIsDir(const char* norm)
 static void gcDvd_NotifyWrite(void)
 {
     if (gcDvd_writeCallback) gcDvd_writeCallback();
+}
+
+// Added: a write that ran out of memory. The file was left cut short, and a cut
+// short save went on to the memory card: "could not load level" from then on
+// (saving in a level with little memory free, e.g. level 4). The game checks
+// this after writing a save (gcDvd_GcTakeWriteFailure) and throws the write away.
+int gcDvd_GcTakeWriteFailure(void)
+{
+    gcOvNode* n = gcDvd_pFailedNode;
+    if (!n) return 0;
+    gcDvd_pFailedNode = NULL;
+    if (n->slot) {
+        // Back to the copy on the card, as it was before this write.
+        gcOv_FreeData(n);
+        n->size = n->cardSize;
+        n->bChanged = 0;
+        n->bLazy = 1;
+    }
+    else
+        gcOv_Remove(n);
+    return 1;
 }
 
 // --- Save slots ------------------------------------------------------------------
@@ -993,18 +1080,18 @@ int gcDvd_SlotAttach(int slot, const char* norm, uint32_t size)
     n->slot = slot;
     n->bLazy = 1;
     n->size = size;
+    n->cardSize = size;
     return 1;
 }
 
-int gcDvd_SlotState(const char* norm, const uint8_t** ppData, uint32_t* pSize)
+int gcDvd_SlotState(const char* norm, gcDvdData* pData)
 {
     gcOvNode* n = gcOv_Find(norm);
     if (!n || n->isDir) return GCDVD_SLOT_ABSENT;
     // Never persisted to a slot yet (e.g. carried over from an old config) counts
     // as changed.
     if (n->bLazy || (!n->bChanged && n->slot)) return GCDVD_SLOT_SAVED;
-    if (ppData) *ppData = n->data;
-    if (pSize) *pSize = n->size;
+    if (pData) { pData->chunks = n->chunks; pData->size = n->size; }
     return GCDVD_SLOT_CHANGED;
 }
 
@@ -1014,23 +1101,52 @@ void gcDvd_SlotPersisted(const char* norm, int slot)
     if (!n) return;
     n->slot = slot;
     n->bChanged = 0;
+    n->cardSize = n->size;
     // Back on the card: drop the RAM copy (a save is ~380 KiB).
-    free(n->data);
-    n->data = NULL;
-    n->cap = 0;
+    gcOv_FreeData(n);
     n->bLazy = 1;
+}
+
+static int gcOv_Sink(void* ctx, const uint8_t* p, uint32_t len)
+{
+    gcOvNode* n = (gcOvNode*)ctx;
+    if (!gcOv_Reserve(n, n->size + len)) return 0;
+    gcOv_CopyIn(n, n->size, p, len);
+    n->size += len;
+    return 1;
 }
 
 static int gcOv_LoadLazy(gcOvNode* n)
 {
     if (!n->bLazy) return 1;
-    uint8_t* data = NULL;
-    uint32_t size = 0;
-    if (!gcDvd_slotLoader || !gcDvd_slotLoader(n->slot, &data, &size)) return 0;
-    n->data = data;
-    n->size = n->cap = size;
+    uint32_t expect = n->size;
+    n->size = 0;
+    gcOv_Reserve(n, expect); // all at once if it can; the sink grows it otherwise
+    if (!gcDvd_slotLoader || !gcDvd_slotLoader(n->slot, gcOv_Sink, n)) {
+        gcOv_FreeData(n);
+        n->size = expect;
+        return 0;
+    }
     n->bLazy = 0;
     return 1;
+}
+
+int gcDvd_SlotLoadData(const char* norm, gcDvdData* pData)
+{
+    gcOvNode* n = gcOv_Find(norm);
+    if (!n || n->isDir || !gcOv_LoadLazy(n)) return 0;
+    pData->chunks = n->chunks;
+    pData->size = n->size;
+    return 1;
+}
+
+void gcDvd_SlotDropData(const char* norm)
+{
+    gcOvNode* n = gcOv_Find(norm);
+    if (n && n->slot && !n->bChanged && !n->bLazy) {
+        gcOv_FreeData(n);
+        n->bLazy = 1;
+    }
 }
 
 // --- devoptab ----------------------------------------------------------------
@@ -1070,9 +1186,15 @@ static int gcDvd_open_r(struct _reent* r, void* fileStruct, const char* path, in
         if (node->isDir) { r->_errno = EISDIR; return -1; }
         if ((flags & O_CREAT) && (flags & O_EXCL)) { r->_errno = EEXIST; return -1; }
         if (wantWrite && (flags & O_TRUNC)) {
-            if (node->bLazy) { node->bLazy = 0; node->data = NULL; node->cap = 0; }
+            uint32_t oldSize = node->size;
+            if (node->bLazy) { node->bLazy = 0; gcOv_FreeData(node); }
             node->size = 0;
             node->bChanged = 1;
+            // Added: room for the whole file up front (the size it had, a bit
+            // more), so it isn't grown by doubling as it's written: that needed
+            // up to twice its size in one block, mid-level.
+            if (oldSize > node->cap)
+                gcOv_Reserve(node, oldSize + oldSize / 8);
         }
         else if (!gcOv_LoadLazy(node)) { r->_errno = EIO; return -1; }
     }
@@ -1091,7 +1213,13 @@ static int gcDvd_open_r(struct _reent* r, void* fileStruct, const char* path, in
             if (!node) { r->_errno = ENOMEM; return -1; }
             if (!(flags & O_TRUNC)) {
                 uint32_t len = gcDvd_pFst[idx].length;
-                if (!gcOv_Reserve(node, len) || !gcDvd_Read(node->data, len, gcDvd_pFst[idx].offset)) {
+                int okCopy = gcOv_Reserve(node, len);
+                for (uint32_t off = 0; okCopy && off < len; off += GCDVD_DATA_CHUNK) {
+                    uint32_t k = len - off < GCDVD_DATA_CHUNK ? len - off : GCDVD_DATA_CHUNK;
+                    okCopy = gcDvd_Read(node->chunks[off / GCDVD_DATA_CHUNK], k,
+                                        (int64_t)gcDvd_pFst[idx].offset + off);
+                }
+                if (!okCopy) {
                     gcOv_Remove(node);
                     r->_errno = EIO;
                     return -1;
@@ -1109,6 +1237,7 @@ static int gcDvd_open_r(struct _reent* r, void* fileStruct, const char* path, in
     }
 
     if (wantWrite && (flags & (O_TRUNC | O_CREAT))) node->bChanged = 1;
+    if (wantWrite && gcDvd_pFailedNode == node) gcDvd_pFailedNode = NULL; // written anew
     f->node = node;
     f->bWritable = wantWrite;
     f->bAppend = !!(flags & O_APPEND);
@@ -1124,9 +1253,7 @@ static int gcDvd_close_r(struct _reent* r, void* fd)
     // A save slot that was only read goes back to living on the card.
     gcOvNode* n = f->node;
     if (n && n->slot && !n->bChanged && !n->bLazy && !f->bDirty) {
-        free(n->data);
-        n->data = NULL;
-        n->cap = 0;
+        gcOv_FreeData(n);
         n->bLazy = 1;
     }
     return 0;
@@ -1139,7 +1266,7 @@ static ssize_t gcDvd_read_r(struct _reent* r, void* fd, char* ptr, size_t len)
     {
         if (f->pos >= f->node->size) return 0;
         if (len > f->node->size - f->pos) len = f->node->size - f->pos;
-        memcpy(ptr, f->node->data + f->pos, len);
+        gcOv_CopyOut(f->node, f->pos, (uint8_t*)ptr, len);
         f->pos += len;
         return (ssize_t)len;
     }
@@ -1159,10 +1286,15 @@ static ssize_t gcDvd_write_r(struct _reent* r, void* fd, const char* ptr, size_t
     if (f->bAppend) f->pos = f->node->size;
 
     uint32_t end = f->pos + len;
-    if (!gcOv_Reserve(f->node, end)) { r->_errno = ENOSPC; return -1; }
+    if (!gcOv_Reserve(f->node, end)) {
+        printf("gcDvd: out of memory writing %s (%u bytes)\n", f->node->path, end);
+        gcDvd_pFailedNode = f->node;
+        r->_errno = ENOSPC;
+        return -1;
+    }
     if (f->pos > f->node->size) // seeked past the end: zero-fill the gap
-        memset(f->node->data + f->node->size, 0, f->pos - f->node->size);
-    memcpy(f->node->data + f->pos, ptr, len);
+        gcOv_CopyIn(f->node, f->node->size, NULL, f->pos - f->node->size);
+    gcOv_CopyIn(f->node, f->pos, (const uint8_t*)ptr, len);
     f->pos = end;
     if (end > f->node->size) f->node->size = end;
     f->bDirty = 1;
@@ -1384,7 +1516,7 @@ static int gcDvd_ftruncate_r(struct _reent* r, void* fd, off_t len)
     if (!f->node || !f->bWritable) { r->_errno = EBADF; return -1; }
     if (!gcOv_Reserve(f->node, (uint32_t)len)) { r->_errno = ENOSPC; return -1; }
     if ((uint32_t)len > f->node->size)
-        memset(f->node->data + f->node->size, 0, (uint32_t)len - f->node->size);
+        gcOv_CopyIn(f->node, f->node->size, NULL, (uint32_t)len - f->node->size);
     f->node->size = (uint32_t)len;
     f->bDirty = 1;
     f->node->bChanged = 1;
@@ -1450,7 +1582,7 @@ uint32_t gcDvd_OverlayRamBytes(void)
 {
     uint32_t total = 0;
     for (gcOvNode* n = gcOv_pHead; n; n = n->next)
-        if (n->data) total += n->cap;
+        total += n->cap;
     return total;
 }
 
@@ -1484,7 +1616,7 @@ uint32_t gcDvd_OverlaySerialize(uint8_t* pOut, uint32_t cap)
         memcpy(p + 4, &size, 4);
         p += 8;
         memcpy(p, n->path, pathLen); p += pathLen;
-        if (size) { memcpy(p, n->data, size); p += size; }
+        if (size) { gcOv_CopyOut(n, 0, p, size); p += size; }
     }
     return (uint32_t)(p - pOut);
 }
@@ -1520,7 +1652,7 @@ int gcDvd_OverlayDeserialize(const uint8_t* pIn, uint32_t len)
         n->size = 0;
         if (size) {
             if (!gcOv_Reserve(n, size)) return 0;
-            memcpy(n->data, p, size);
+            gcOv_CopyIn(n, 0, p, size);
             n->size = size;
             p += size;
         }

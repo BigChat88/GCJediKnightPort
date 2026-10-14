@@ -216,8 +216,31 @@ static void gcCard_NoticeBegin(void)
     gcCard_bNoticeShown = 1;
 }
 
+// Fills the sector at file offset off (gcCard_sectorSize bytes). Returns 0 on error.
+typedef int (*gcCardFillFn)(void* ctx, u8* sector, u32 off);
+
+static int gcCard_FillFromBuffer(void* ctx, u8* sector, u32 off)
+{
+    memcpy(sector, (const u8*)ctx + off, gcCard_sectorSize);
+    return 1;
+}
+
+static s32 gcCard_WriteStream(const char* name, u32 fileLen, gcCardFillFn fill, void* ctx);
+
 static s32 gcCard_WriteAll(const char* name, u8* buf, u32 fileLen)
 {
+    return gcCard_WriteStream(name, fileLen, gcCard_FillFromBuffer, buf);
+}
+
+// Writes a file of fileLen bytes (whole sectors), each sector produced by fill,
+// so the file never has to be in memory at once.
+static s32 gcCard_WriteStream(const char* name, u32 fileLen, gcCardFillFn fill, void* ctx)
+{
+    u8* sector = (u8*)memalign(32, gcCard_sectorSize);
+    if (!sector) {
+        gcCard_SetError("out of memory writing %s", name);
+        return GCCARD_ERR_CREATE;
+    }
     gcCard_NoticeBegin();
     card_file file;
     s32 res = CARD_Open(gcCard_slot, name, &file);
@@ -240,6 +263,7 @@ static s32 gcCard_WriteAll(const char* name, u8* buf, u32 fileLen)
         else {
             CARD_Close(&file);
             gcCard_SetError("%s: needs %u blocks, %u free", name, need, have);
+            free(sector);
             return GCCARD_ERR_CREATE;
         }
     }
@@ -250,6 +274,7 @@ static s32 gcCard_WriteAll(const char* name, u8* buf, u32 fileLen)
             CARD_GetFreeBlocks(gcCard_slot, &freeBlocks);
             gcCard_SetError("create %s (%u blocks) error %d, %u free",
                             name, fileLen / gcCard_sectorSize, (int)res, freeBlocks);
+            free(sector);
             return GCCARD_ERR_CREATE;
         }
     }
@@ -260,16 +285,23 @@ static s32 gcCard_WriteAll(const char* name, u8* buf, u32 fileLen)
     // A failed sector is retried a couple of times (real cards sometimes report an
     // I/O error, -5, on a write; Dolphin never does).
     u32 off = 0, failMs = 0;
+    int bFillFailed = 0;
     for (; off < fileLen && res >= 0; off += gcCard_sectorSize) {
+        if (!fill(ctx, sector, off)) { bFillFailed = 1; res = GCCARD_ERR_CREATE; break; }
+        DCFlushRange(sector, gcCard_sectorSize);
         for (int attempt = 0; attempt < 3; attempt++) {
             u64 w0 = gettime();
-            res = CARD_Write(&file, buf + off, gcCard_sectorSize, off);
+            res = CARD_Write(&file, sector, gcCard_sectorSize, off);
             if (res >= 0) break;
             failMs = diff_msec(w0, gettime());
         }
     }
     gcSystem_bMuteReport = 0;
-    if (res < 0) {
+    free(sector);
+    if (bFillFailed) {
+        gcCard_SetError("preparing %s failed", name);
+    }
+    else if (res < 0) {
         u32 cardBlocks = 0;
         CARD_GetBlockCount(gcCard_slot, &cardBlocks);
         gcCard_SetError("write %s error %d at block %u; card %u blocks, sector %u at %u, %u ms",
@@ -394,47 +426,152 @@ static void gcCard_SlotComment(int n, const uint8_t* pSave, uint32_t size, char*
     snprintf(out, outLen, "Save %d: %s", n, title);
 }
 
-static int gcCard_WriteSlot(int n, const uint8_t* pData, uint32_t size)
+// Added: a save is compressed and written a sector at a time. It used to be
+// compressed into one buffer of its worst case size (~480 KiB) plus zlib's
+// ~270 KiB, which mid-level (level 4) wasn't there: "out of memory for save".
+// A small deflate window (~64 KiB in all) runs twice: once to learn the
+// compressed length and checksum (they go in the header, and the card file is
+// created at its final size), then again to produce the sectors. The output is
+// an ordinary zlib stream (loading reads either).
+#define GCCARD_DEFLATE_WBITS 13
+#define GCCARD_DEFLATE_MEMLEVEL 6
+
+// Compresses a save held in pieces (gcDvdData), a bit of output at a time.
+typedef struct gcCardDeflate {
+    z_stream  zs;
+    gcDvdData data;
+    uint32_t  nextPiece;
+    uint32_t  numPieces;
+    int       bEnd;
+} gcCardDeflate;
+
+static int gcCard_DeflateBegin(gcCardDeflate* d, const gcDvdData* pData)
 {
-    uLongf compLen = compressBound(size);
+    memset(d, 0, sizeof(*d));
+    d->data = *pData;
+    d->numPieces = (pData->size + GCDVD_DATA_CHUNK - 1) / GCDVD_DATA_CHUNK;
+    return deflateInit2(&d->zs, Z_BEST_SPEED, Z_DEFLATED, GCCARD_DEFLATE_WBITS,
+                        GCCARD_DEFLATE_MEMLEVEL, Z_DEFAULT_STRATEGY) == Z_OK;
+}
+
+// Fills out[0..len) as far as the stream goes; returns the bytes made, -1 on error.
+static int gcCard_DeflateSome(gcCardDeflate* d, u8* out, u32 len)
+{
+    d->zs.next_out = out;
+    d->zs.avail_out = len;
+    while (d->zs.avail_out && !d->bEnd) {
+        if (!d->zs.avail_in && d->nextPiece < d->numPieces) {
+            uint32_t off = d->nextPiece * GCDVD_DATA_CHUNK;
+            uint32_t k = d->data.size - off;
+            if (k > GCDVD_DATA_CHUNK) k = GCDVD_DATA_CHUNK;
+            d->zs.next_in = (Bytef*)d->data.chunks[d->nextPiece++];
+            d->zs.avail_in = k;
+        }
+        int flush = d->nextPiece >= d->numPieces ? Z_FINISH : Z_NO_FLUSH;
+        int z = deflate(&d->zs, flush);
+        if (z == Z_STREAM_END) d->bEnd = 1;
+        else if (z == Z_BUF_ERROR) {
+            if (d->zs.avail_in || d->nextPiece >= d->numPieces) return -1; // stuck
+        }
+        else if (z != Z_OK) return -1;
+    }
+    return (int)(len - d->zs.avail_out);
+}
+
+typedef struct gcCardSlotStream {
+    gcCardDeflate d;
+    const u8* pHead;     // the header area, GCCARD_DATA_OFF bytes
+} gcCardSlotStream;
+
+static int gcCard_FillSlotSector(void* ctx, u8* sector, u32 off)
+{
+    gcCardSlotStream* st = (gcCardSlotStream*)ctx;
+    u32 pos = 0;
+    // The header area first.
+    if (off < GCCARD_DATA_OFF) {
+        u32 n = GCCARD_DATA_OFF - off;
+        if (n > gcCard_sectorSize) n = gcCard_sectorSize;
+        memcpy(sector, st->pHead + off, n);
+        pos = n;
+    }
+    // Then the compressed stream, zeros after its end.
+    if (pos < gcCard_sectorSize) {
+        int got = gcCard_DeflateSome(&st->d, sector + pos, gcCard_sectorSize - pos);
+        if (got < 0) return 0;
+        pos += (u32)got;
+        memset(sector + pos, 0, gcCard_sectorSize - pos);
+    }
+    return 1;
+}
+
+static int gcCard_WriteSlot(int n, const gcDvdData* pData)
+{
+    // Pass 1: compressed length and checksum.
+    gcCardDeflate d;
+    if (!gcCard_DeflateBegin(&d, pData)) {
+        deflateEnd(&d.zs);
+        gcCard_SetError("out of memory for save %d (zlib)", n);
+        return 0;
+    }
+    static u8 scratch[4096];
+    u32 compLen = 0;
+    u32 sum = 2166136261u; // gcCard_Checksum(.., 0), a piece at a time
+    int got;
+    while ((got = gcCard_DeflateSome(&d, scratch, sizeof(scratch))) > 0) {
+        for (int i = 0; i < got; i++) { sum ^= scratch[i]; sum *= 16777619u; }
+        compLen += (u32)got;
+    }
+    int bEnd = d.bEnd;
+    deflateEnd(&d.zs);
+    if (got < 0 || !bEnd) {
+        gcCard_SetError("compressing save %d failed", n);
+        return 0;
+    }
     u32 fileLen = gcCard_RoundUp(GCCARD_DATA_OFF + compLen);
-    u8* buf = (u8*)memalign(32, fileLen);
-    if (!buf) {
-        gcCard_SetError("out of memory for save %d (%u KiB)", n, fileLen / 1024);
-        return 0;
-    }
-    memset(buf, 0, fileLen);
-    int zres = compress2(buf + GCCARD_DATA_OFF, &compLen, pData, size, Z_BEST_SPEED);
-    if (zres != Z_OK) {
-        free(buf);
-        gcCard_SetError("compressing save %d failed (zlib %d)", n, zres);
-        return 0;
-    }
-    fileLen = gcCard_RoundUp(GCCARD_DATA_OFF + compLen);
 
+    // The header area: comment lines, graphics, then the slot header.
+    static u8 head[GCCARD_DATA_OFF];
+    memset(head, 0, sizeof(head));
     char comment[64];
-    gcCard_SlotComment(n, pData, size, comment, sizeof(comment));
-    gcCard_SetHeader(buf, gcGame_Title(), comment);
-    u32 hdr[4] = { GCCARD_SLOT_MAGIC, size, (u32)compLen,
-                   gcCard_Checksum(buf + GCCARD_DATA_OFF, (u32)compLen, 0) };
-    memcpy(buf + 0x40, hdr, sizeof(hdr));
+    if (pData->size)
+        gcCard_SlotComment(n, pData->chunks[0], pData->size < GCDVD_DATA_CHUNK ? pData->size : GCDVD_DATA_CHUNK,
+                           comment, sizeof(comment));
+    else
+        snprintf(comment, sizeof(comment), "Save %d", n);
+    gcCard_SetHeader(head, gcGame_Title(), comment);
+    u32 hdr[4] = { GCCARD_SLOT_MAGIC, pData->size, compLen, sum };
+    memcpy(head + 0x40, hdr, sizeof(hdr));
 
+    // Pass 2: the same stream, into the card's sectors.
+    gcCardSlotStream st;
+    st.pHead = head;
+    if (!gcCard_DeflateBegin(&st.d, pData)) {
+        deflateEnd(&st.d.zs);
+        gcCard_SetError("out of memory for save %d (zlib)", n);
+        return 0;
+    }
     char name[32];
     gcCard_SlotFilename(n, name, sizeof(name));
-    s32 res = gcCard_WriteAll(name, buf, fileLen);
-    free(buf);
+    s32 res = gcCard_WriteStream(name, fileLen, gcCard_FillSlotSector, &st);
+    bEnd = st.d.bEnd;
+    deflateEnd(&st.d.zs);
+    if (res >= 0 && !bEnd) {
+        gcCard_SetError("save %d: compressed data didn't fit", n);
+        return 0;
+    }
     if (res < 0) {
         printf("gcCard: writing %s failed (%d)\n", name, (int)res);
         return 0;
     }
     u32 blocks = fileLen / gcCard_sectorSize;
     if (blocks > gcCard_saveBlocksEstimate) gcCard_saveBlocksEstimate = blocks;
-    printf("gcCard: %s saved (%u -> %u bytes, %u blocks)\n", name, size, (u32)compLen, blocks);
+    printf("gcCard: %s saved (%u -> %u bytes, %u blocks)\n", name, pData->size, compLen, blocks);
     return 1;
 }
 
-// gcDvd slot loader: fetch and decompress save slot n.
-static int gcCard_LoadSlot(int n, uint8_t** ppData, uint32_t* pSize)
+// gcDvd slot loader: fetch save slot n and hand it over decompressed, a piece at
+// a time (no buffer of the whole save: mid-level there was no block that big).
+static int gcCard_LoadSlot(int n, gcDvdSlotSink sink, void* ctx)
 {
     if (!gcCard_MountAny()) return 0;
     char name[32];
@@ -451,16 +588,28 @@ static int gcCard_LoadSlot(int n, uint8_t** ppData, uint32_t* pSize)
         && len >= dataOff && hdr[2] <= len - dataOff
         && gcCard_Checksum(buf + dataOff, hdr[2], 0) == hdr[3])
     {
-        uint8_t* out = (uint8_t*)malloc(hdr[1] ? hdr[1] : 1);
-        uLongf outLen = hdr[1];
-        if (out && uncompress(out, &outLen, buf + dataOff, hdr[2]) == Z_OK && outLen == hdr[1]) {
-            *ppData = out;
-            *pSize = hdr[1];
-            ok = 1;
+        z_stream zs;
+        memset(&zs, 0, sizeof(zs));
+        if (inflateInit(&zs) == Z_OK) {
+            static u8 out[8192];
+            u32 total = 0;
+            int z;
+            zs.next_in = buf + dataOff;
+            zs.avail_in = hdr[2];
+            do {
+                zs.next_out = out;
+                zs.avail_out = sizeof(out);
+                z = inflate(&zs, Z_NO_FLUSH);
+                u32 got = sizeof(out) - zs.avail_out;
+                if (got && !sink(ctx, out, got)) { z = Z_MEM_ERROR; break; }
+                total += got;
+            } while (z == Z_OK);
+            inflateEnd(&zs);
+            ok = z == Z_STREAM_END && total == hdr[1];
+            if (z == Z_MEM_ERROR) printf("gcCard: no memory to load %s\n", name);
         }
-        else free(out);
     }
-    if (!ok) printf("gcCard: %s is damaged\n", name);
+    if (!ok) printf("gcCard: %s is damaged or could not be loaded\n", name);
     free(buf);
     return ok;
 }
@@ -475,9 +624,8 @@ static int gcCard_SyncSlots(void)
         char path[64], name[32];
         gcCard_SlotPath(n, path, sizeof(path));
         gcCard_SlotFilename(n, name, sizeof(name));
-        const uint8_t* data = NULL;
-        uint32_t size = 0;
-        switch (gcDvd_SlotState(path, &data, &size))
+        gcDvdData data;
+        switch (gcDvd_SlotState(path, &data))
         {
             case GCDVD_SLOT_ABSENT:
                 if (gcCard_aSlotOnCard[n]) {
@@ -488,7 +636,7 @@ static int gcCard_SyncSlots(void)
                 }
                 break;
             case GCDVD_SLOT_CHANGED:
-                if (gcCard_WriteSlot(n, data, size)) {
+                if (gcCard_WriteSlot(n, &data)) {
                     gcCard_aSlotOnCard[n] = 1;
                     gcDvd_SlotPersisted(path, n);
                 }
@@ -500,11 +648,10 @@ static int gcCard_SyncSlots(void)
                     // Once per boot, even if it fails (e.g. the card is full):
                     // it means a decompress + recompress + write.
                     gcCard_aSlotOldLayout[n] = 0;
-                    uint8_t* old = NULL;
-                    uint32_t oldSize = 0;
-                    if (gcCard_LoadSlot(n, &old, &oldSize))
-                        gcCard_WriteSlot(n, old, oldSize);
-                    free(old);
+                    if (gcDvd_SlotLoadData(path, &data)) {
+                        gcCard_WriteSlot(n, &data);
+                        gcDvd_SlotDropData(path);
+                    }
                 }
                 break;
         }
@@ -516,7 +663,7 @@ int gcCard_GetSlotInfo(int n, int* pbUsed)
 {
     char path[64];
     gcCard_SlotPath(n, path, sizeof(path));
-    *pbUsed = gcDvd_SlotState(path, NULL, NULL) != GCDVD_SLOT_ABSENT;
+    *pbUsed = gcDvd_SlotState(path, NULL) != GCDVD_SLOT_ABSENT;
     return 1;
 }
 

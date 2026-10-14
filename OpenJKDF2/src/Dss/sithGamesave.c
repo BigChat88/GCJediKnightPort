@@ -138,7 +138,29 @@ int sithGamesave_Restore(char *saveFname, int debugNextCheckpoint, int a3)
         LEC_PATH_SEPARATOR_CHR, playerName, LEC_PATH_SEPARATOR_CHR, saveFname
     );
 
-    if (stdConffile_OpenReadBytesBypass(fpath))
+    int bOpened = stdConffile_OpenReadBytesBypass(fpath);
+#ifdef TARGET_GAMECUBE
+    // Added: opening a save slot unpacks it from the memory card (~380 KiB). In a
+    // level with little memory free that failed and loading did nothing: give back
+    // what can be reloaded and try again; failing that, go ahead from inside a
+    // level anyway (sithGamesave_RestoreFile closes the level and retries).
+    if (!bOpened) {
+        extern void std3D_GcReleaseMemory(void);
+        extern uint32_t sithSound_GcFreeAllIdle(void);
+        std3D_GcReleaseMemory();
+        sithSound_GcFreeAllIdle();
+        bOpened = stdConffile_OpenReadBytesBypass(fpath);
+        if (!bOpened && sithWorld_g_pCurrentWorld) {
+            stdPlatform_Printf("sithGamesave: no memory to check %s, loading it anyway\n", fpath);
+            sithGamesave_dword_835914 = a3;
+            sithGamesave_state = debugNextCheckpoint != 0 ? SITH_GS_LOAD_DEBUG_NEXTCHECKPOINT : SITH_GS_LOAD;
+            _strncpy(sithGamesave_aCurFilename, fpath, 0x7Fu);
+            sithGamesave_aCurFilename[127] = 0;
+            return 1;
+        }
+    }
+#endif
+    if (bOpened)
     {
         stdConffile_Close();
         sithGamesave_dword_835914 = a3;
@@ -184,7 +206,22 @@ int sithGamesave_RestoreFile(char *fpath)
 #endif
 
     if ( !stdConffile_OpenReadBytesBypass(fpath) )
+    {
+#ifdef TARGET_GAMECUBE
+        // Added: a save slot is read from the memory card and unpacked (~380 KiB)
+        // when it's opened; in a level with little memory free that can fail.
+        // Close the level (it's replaced anyway) and try again.
+        if (!sithWorld_g_pCurrentWorld)
+            goto load_fail;
+        extern void std3D_GcReleaseMemory(void);
+        extern uint32_t sithSound_GcFreeAllIdle(void);
+        sithClose();
+        std3D_GcReleaseMemory();
+        sithSound_GcFreeAllIdle();
+        if ( !stdConffile_OpenReadBytesBypass(fpath) )
+#endif
         goto load_fail;
+    }
     stdConffile_Read(&header, sizeof(sithGamesave_Header));
 
     if (!Main_bMotsCompat) {

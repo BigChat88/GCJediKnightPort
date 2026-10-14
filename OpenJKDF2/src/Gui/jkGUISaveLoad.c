@@ -22,6 +22,7 @@
 #include "jk.h"
 #ifdef TARGET_GAMECUBE
 #include "Platform/GameCube/gcCard.h"
+#include "Platform/GameCube/gcDvd.h"
 #include "Gui/jkGUIDialog.h"
 #include "Gui/jkGUITitle.h"
 #include "Main/jkMain.h"
@@ -338,8 +339,25 @@ static int jkGuiSaveLoad_GcShow(int bIsSave)
             char16_t desc[256];
             char16_t* pTitle = jkGuiTitle_quicksave_related_func1(&jkCog_strings, sithWorld_g_pCurrentWorld->map_jkl_fname);
             jk_snwprintf(desc, 256, u"%s~%s", pTitle, pTitle);
+            // Added: a save is ~380 KiB written in one go; give back what can be
+            // reloaded later (texture copies, idle sounds) so it fits mid-level.
+            {
+                extern void std3D_GcReleaseMemory(void);
+                extern uint32_t sithSound_GcFreeAllIdle(void);
+                std3D_GcReleaseMemory();
+                sithSound_GcFreeAllIdle();
+            }
+            gcDvd_GcTakeWriteFailure(); // an earlier one (a cut-short autosave): dropped
             sithGamesave_Save(e->fpath, 1, 1, desc);
             sithGamesave_Process();
+            // Added: if it didn't fit, nothing is written to the card (it would be
+            // a cut-short save that can't be loaded); the slot keeps what it had.
+            if (gcDvd_GcTakeWriteFailure()) {
+                jkGuiDialog_ErrorDialog(jkStrings_GetUniStringWithFallback("GUI_SLSAVEGAME"),
+                    u"Not enough memory to save the game here. The save slot was not changed.");
+                result = 1;
+                break;
+            }
             if (!gcCard_Save()) {
                 char16_t msg[256];
                 jk_snwprintf(msg, 256, u"The game could not be written to the memory card (%S).",

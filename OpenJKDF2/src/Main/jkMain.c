@@ -609,6 +609,22 @@ void jkMain_GameplayShow(int a1, int a2)
             jkPlayer_SetAmmoMaximums(0);
 #endif
             v3 = sithGamesave_Restore(jkMain_aLevelJklFname, 0, 1);
+#ifdef TARGET_GAMECUBE
+            // Added: as for a new level (above), once more with everything
+            // reloadable given back before giving up.
+            if (!v3) {
+                extern void gcDvd_DropCaches(void);
+                extern void std3D_GcReleaseMemory(void);
+                extern uint32_t sithSound_GcFreeAllIdle(void);
+                extern void stdSound_GcReclaimWait(int maxTries);
+                stdPlatform_Printf("jkMain: loading the save failed, retrying\n");
+                gcDvd_DropCaches();
+                std3D_GcReleaseMemory();
+                sithSound_GcFreeAllIdle();
+                stdSound_GcReclaimWait(100);
+                v3 = sithGamesave_Restore(jkMain_aLevelJklFname, 0, 1);
+            }
+#endif
         }
         else if ( jkSmack_gameMode == 2 )
         {

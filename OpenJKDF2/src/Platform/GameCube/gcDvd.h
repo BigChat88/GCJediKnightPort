@@ -52,17 +52,32 @@ const char* gcDvd_GetSdInfo(char* buf, int len);
 void gcDvd_PauseReads(void);
 void gcDvd_ResumeReads(void);
 
+// Overlay files are kept in pieces of this many bytes (the last may be shorter).
+#define GCDVD_DATA_CHUNK (32 * 1024)
+typedef struct gcDvdData {
+    uint8_t* const* chunks; // piece i holds bytes [i * GCDVD_DATA_CHUNK, ...)
+    uint32_t        size;
+} gcDvdData;
+
 // Save slots (see gcCard): an overlay file attached to a memory card file of its
-// own. Its data is fetched through the loader only while the file is open.
-typedef int (*gcDvdSlotLoader)(int slot, uint8_t** ppData, uint32_t* pSize);
+// own. Its data is fetched through the loader only while the file is open; the
+// loader hands it over a piece at a time through sink (0: out of memory).
+typedef int (*gcDvdSlotSink)(void* ctx, const uint8_t* p, uint32_t len);
+typedef int (*gcDvdSlotLoader)(int slot, gcDvdSlotSink sink, void* ctx);
 void gcDvd_SetSlotLoader(gcDvdSlotLoader fn);
 int  gcDvd_SlotAttach(int slot, const char* normPath, uint32_t size);
 enum { GCDVD_SLOT_ABSENT, GCDVD_SLOT_SAVED, GCDVD_SLOT_CHANGED };
-// ABSENT: no such file; SAVED: unchanged since persisted; CHANGED: *ppData/*pSize
-// hold the new contents to write to the card.
-int  gcDvd_SlotState(const char* normPath, const uint8_t** ppData, uint32_t* pSize);
+// ABSENT: no such file; SAVED: unchanged since persisted; CHANGED: *pData holds
+// the new contents to write to the card.
+int  gcDvd_SlotState(const char* normPath, gcDvdData* pData);
+// A saved slot's contents, fetched from the card (gcDvd_SlotDropData lets go).
+int  gcDvd_SlotLoadData(const char* normPath, gcDvdData* pData);
+void gcDvd_SlotDropData(const char* normPath);
 // The slot's contents are now on the card: drop the RAM copy.
 void gcDvd_SlotPersisted(const char* normPath, int slot);
+// A write ran out of memory since the last call: the file it cut short is thrown
+// away (a save slot goes back to the copy on the card). Returns 1 if so.
+int  gcDvd_GcTakeWriteFailure(void);
 
 // Called whenever the overlay changes (a written file is closed, a directory or
 // file is created/removed/renamed).
