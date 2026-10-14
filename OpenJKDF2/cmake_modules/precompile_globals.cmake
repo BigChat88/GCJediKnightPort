@@ -36,7 +36,11 @@ add_custom_command(
 if(NOT PLAT_MSVC)
     add_custom_command(
         OUTPUT ${PYTHON_EXE}
-        COMMAND python3 -m venv ${CMAKE_CURRENT_BINARY_DIR}/cogapp_venv
+        # Added: no symlinks (--copies, and the lib64 -> lib link venv always makes
+        # on 64-bit Linux removed: nothing uses it), so a build folder can be
+        # copied on Windows.
+        COMMAND python3 -m venv --copies ${CMAKE_CURRENT_BINARY_DIR}/cogapp_venv
+        COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_CURRENT_BINARY_DIR}/cogapp_venv/lib64
     )
     add_custom_command(
         OUTPUT ${COGAPP_DEPENDS}
