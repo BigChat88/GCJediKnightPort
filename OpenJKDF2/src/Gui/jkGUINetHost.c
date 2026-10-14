@@ -204,6 +204,10 @@ static void jkGuiNetHost_GcLayout(void)
 
 // The Advanced screen edits the main screen's own buffers and checkboxes; Cancel
 // puts them back.
+// Added: at most 10 players in a GameCube game (the console's network buffers
+// and the host's upload don't stretch to the PC's 32).
+#define JKGUINETHOST_GC_MAX_PLAYERS 10
+
 static void jkGuiNetHost_GcAdvanced(char16_t* pMaxPlayers, char16_t* pScore, char16_t* pTime, char16_t* pPassword)
 {
     jkGuiElement* m = jkGuiNetHost_aElements;
@@ -230,7 +234,7 @@ static void jkGuiNetHost_GcAdvanced(char16_t* pMaxPlayers, char16_t* pScore, cha
     a[NETHOST_GCADV_TEAMMODE].selectedTextEntry = m[NETHOST_TEAMMODE_CHECKBOX].selectedTextEntry;
     a[NETHOST_GCADV_SINGLELEVEL].selectedTextEntry = m[NETHOST_SINGLELEVEL_CHECKBOX].selectedTextEntry;
 
-    jkGuiRend_GcSetNumeric(&a[NETHOST_GCADV_MAXPLAYERS], 2, 32, 1);
+    jkGuiRend_GcSetNumeric(&a[NETHOST_GCADV_MAXPLAYERS], 2, JKGUINETHOST_GC_MAX_PLAYERS, 1);
     jkGuiRend_GcSetNumeric(&a[NETHOST_GCADV_SCORELIMIT], 5, 500, 5);
     jkGuiRend_GcSetNumeric(&a[NETHOST_GCADV_TIMELIMIT], 1, 100, 1);
     jkGuiRend_GcSetNumeric(&a[NETHOST_GCADV_TICKRATE], 50, 300, 10);
@@ -336,6 +340,10 @@ void jkGuiNetHost_LoadSettings()
     jkGuiNetHost_scoreLimit = wuRegistry_GetInt("scoreLimit", jkGuiNetHost_scoreLimit);
     jkGuiNetHost_maxPlayers = wuRegistry_GetInt("maxPlayers", jkGuiNetHost_maxPlayers);
     jkGuiNetHost_tickRate = wuRegistry_GetInt("tickRate", jkGuiNetHost_tickRate);
+#ifdef TARGET_GAMECUBE
+    if (jkGuiNetHost_maxPlayers > JKGUINETHOST_GC_MAX_PLAYERS) // saved before the limit
+        jkGuiNetHost_maxPlayers = JKGUINETHOST_GC_MAX_PLAYERS;
+#endif
 
     // MOTS added:
     //if (jkGuiNetHost_maxRank > 8) {
@@ -555,6 +563,10 @@ int jkGuiNetHost_Show(jkMultiEntry3 *pMultiEntry)
                     v10 = 31;
             }
 
+#ifdef TARGET_GAMECUBE
+            if (v10 > JKGUINETHOST_GC_MAX_PLAYERS + (jkGuiNetHost_bIsDedicated ? 1 : 0))
+                v10 = JKGUINETHOST_GC_MAX_PLAYERS + (jkGuiNetHost_bIsDedicated ? 1 : 0);
+#endif
             pMultiEntry->maxPlayers = v10;
             jkGuiNetHost_maxPlayers = v10;
             pMultiEntry->maxRank = jkGuiNetHost_maxRank;

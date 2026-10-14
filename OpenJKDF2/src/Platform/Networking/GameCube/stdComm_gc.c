@@ -45,7 +45,7 @@
 
 #define GCCOMM_GAME_PORT     27020
 #define GCCOMM_DISC_PORT     27021
-#define GCCOMM_MAX_CLIENTS   15
+#define GCCOMM_MAX_CLIENTS   10          // at most 10 players (host + 9, or a dedicated host + 10)
 #define GCCOMM_MAGIC         0x4A4B4743u // "JKGC"
 #define GCCOMM_QUERY         0x4A4B4751u // "JKGQ": "any games?" (answered with a beacon)
 #define GCCOMM_VERSION       2
@@ -337,9 +337,32 @@ static uint8_t       gcComm_rxScratch[GCCOMM_RXQ_SLOT];
 static void gcComm_RxLock(void)   { gcComm_NetLock(); }
 static void gcComm_RxUnlock(void) { gcComm_NetUnlock(); }
 
+// Added: the sockets are never really closed (see gcComm_OpenUdp), so one not in
+// use still receives: the discovery port gets the host's beacons twice a second
+// all through the game. Unread, each one holds an lwIP buffer, and within seconds
+// there were none left -- the joining player could neither receive nor send
+// (-ENOBUFS) and both ends timed out ("contacting host", 8 packets). Whatever
+// arrives on a socket nobody is using is thrown away here (lock held).
+static uint32_t gcComm_statIdleDropped = 0;
+static void gcComm_DrainIdleLocked(void)
+{
+    uint8_t junk[64];
+    for (int i = 0; i < GCCOMM_NUM_PORTS; i++) {
+        s32 s = gcComm_aPortSock[i];
+        if (s < 0 || s == gcComm_sock || s == gcComm_listenUdp || s == gcComm_beaconSock) continue;
+        for (int k = 0; k < 64; k++) {
+            struct sockaddr_in from;
+            socklen_t flen = sizeof(from);
+            if (net_recvfrom(s, junk, sizeof(junk), 0, (struct sockaddr*)&from, &flen) < 0) break;
+            gcComm_statIdleDropped++;
+        }
+    }
+}
+
 // Moves whatever is waiting on the game socket into the queue (lock held).
 static void gcComm_RxDrainLocked(void)
 {
+    gcComm_DrainIdleLocked();
     while (gcComm_sock >= 0) {
         struct sockaddr_in from;
         socklen_t flen = sizeof(from);
@@ -383,7 +406,7 @@ static void gcComm_CloseGameSock(void)
     gcComm_sock = -1;
     gcComm_rxqHead = gcComm_rxqTail = 0;
     gcComm_RxUnlock();
-    gcComm_statRx = gcComm_statBad = gcComm_statOther = gcComm_statRxqDropped = 0;
+    gcComm_statRx = gcComm_statBad = gcComm_statOther = gcComm_statRxqDropped = gcComm_statIdleDropped = 0;
     gcComm_statSendErrors = 0;
     gcComm_lastPollMs = 0;
 }
@@ -831,9 +854,9 @@ static int gcComm_ClientReceive(int* pIdOut, void* pMsg, int* pLen)
         struct in_addr a; a.s_addr = gcComm_server.ip;
         struct in_addr o; o.s_addr = gcComm_statOtherIp;
         gcComm_Printf("lost the host %s:%u (timed out)\n", inet_ntoa(a), gcComm_server.port);
-        gcComm_Printf("  received %u packets: %u not ours, %u from %s:%u, last recv error %u, %u dropped (queue full)\n",
+        gcComm_Printf("  received %u packets: %u not ours, %u from %s:%u, last recv error %u, %u dropped (queue full), %u on idle ports, %u send errors\n",
                       gcComm_statRx, gcComm_statBad, gcComm_statOther, inet_ntoa(o), gcComm_statOtherPort,
-                      gcComm_statLastErr, gcComm_statRxqDropped);
+                      gcComm_statLastErr, gcComm_statRxqDropped, gcComm_statIdleDropped, gcComm_statSendErrors);
         gcComm_bHostLost = 1;
     }
     if (gcComm_bHostLost) {
