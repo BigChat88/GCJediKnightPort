@@ -42,3 +42,4 @@ __pycache__/
 
 # --- backup of OpenJKDF2's own git history (upstream base 02297602) ---
 /.openjkdf2-upstream.git/
+/toolbin/

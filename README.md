@@ -45,6 +45,13 @@ The first run installs `numpy` (soundtrack conversion) and `Pillow` (disc banner
 with pip. `python tools/pack_iso.py --help` lists the options (other folders,
 one game only, no music).
 
+The build also makes the sound bank (`resource/sndbank.bin`, every sound
+pre-encoded for the GameCube's DSP) with a small tool that comes built for
+Windows and Linux in `tools/bin/`. On macOS it is compiled on the fly, which
+needs a C compiler (`xcode-select --install`); without one the images are still
+built, but the game then plays its sounds from the original files, using more
+memory in the levels.
+
 ## Controls
 
 | Button | Action |

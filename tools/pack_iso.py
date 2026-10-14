@@ -3,8 +3,8 @@
 
 Finds the CD images in gamedata/ (or the folders given on the command line),
 tells Jedi Knight discs from Mysteries of the Sith by their contents, lays the
-data out for the GameCube (extract_assets.py) and writes the bootable images
-(make_gcm.py):
+data out for the GameCube (extract_assets.py), builds the sound bank
+(make_sndbank.py) and writes the bootable images (make_gcm.py):
 
     output/openjkdf2.iso   Jedi Knight: Dark Forces II
     output/openjkm.iso     Mysteries of the Sith
@@ -19,10 +19,17 @@ track is how the CD audio tracks (the soundtrack) are found.
 
 The engine comes from engine/ (release bundle) or, in a source checkout,
 OpenJKDF2/build_gamecube/ (build it first, see README.md).
+
+The sound bank (resource/sndbank.bin: every sound pre-encoded for the GameCube's
+DSP) is made by a small C tool. The release bundle carries it built for Windows
+and Linux in tools/bin/; elsewhere it is compiled with the system's C compiler
+(cc/gcc/clang). Without it the game still works, but plays its sounds from the
+WAVs in the GOBs: more memory used in the levels, and disc reads while playing.
 """
 
 import argparse
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -80,6 +87,53 @@ def identify(path):
     return None
 
 
+def find_sndbank_encoder(work_root):
+    """The sound bank encoder: the one in tools/bin/ for this system, else compiled
+    from OpenJKDF2/packaging/gamecube/sndbank/ with the C compiler. None if neither."""
+    bindir = os.path.join(ROOT, "tools", "bin")
+    machine = platform.machine().lower()
+    if os.name == "nt":
+        candidates = ["sndbank-windows-x86_64.exe"]
+    elif sys.platform.startswith("linux") and machine in ("x86_64", "amd64"):
+        candidates = ["sndbank-linux-x86_64"]
+    else:
+        candidates = []
+    for name in candidates:
+        path = os.path.join(bindir, name)
+        if os.path.exists(path):
+            return path
+
+    src = os.path.join(PACKAGING, "sndbank")
+    exe = os.path.join(work_root, "sndbank" + (".exe" if os.name == "nt" else ""))
+    if os.path.exists(exe):
+        return exe
+    for cc in (os.environ.get("CC"), "cc", "gcc", "clang"):
+        if cc and shutil.which(cc):
+            os.makedirs(work_root, exist_ok=True)
+            cmd = [cc, "-O2", "-o", exe, os.path.join(src, "sndbank.c"), os.path.join(src, "grok.c"), "-lm"]
+            if run(cmd) == 0 and os.path.exists(exe):
+                return exe
+    return None
+
+
+def build_sndbank(game_dir, work_root, clean):
+    """resource/sndbank.bin for an extracted game; a warning (not an error) if it can't."""
+    bank = os.path.join(game_dir, "resource", "sndbank.bin")
+    if os.path.exists(bank) and not clean:
+        print(f"  {os.path.relpath(bank, ROOT)} already built")
+        return
+    encoder = find_sndbank_encoder(work_root)
+    if not encoder:
+        print("warning: no sound bank encoder for this system and no C compiler found; the disc "
+              "image is built without resource/sndbank.bin (sounds then play from the GOBs, "
+              "which uses more memory in the levels)")
+        return
+    if run([sys.executable, os.path.join(PACKAGING, "make_sndbank.py"), game_dir, encoder]) != 0:
+        if os.path.exists(bank):
+            os.remove(bank)  # a half-written bank would be worse than none
+        print("warning: building the sound bank failed; continuing without it")
+
+
 def run(cmd):
     print("> " + " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
     return subprocess.call(cmd)
@@ -124,8 +178,13 @@ def main():
         if args.no_music:
             extract.append("--no-music")
         iso = os.path.join(args.out, game["iso"])
-        if run(extract) != 0 or run([sys.executable, os.path.join(PACKAGING, "make_gcm.py"), dol, work,
-                                     "-o", iso, "--apploader", apploader, *game["args"]]) != 0:
+        if run(extract) != 0:
+            failed.append(key)
+            continue
+        build_sndbank(os.path.join(work, "mots" if key == "mots" else "jk1"),
+                      os.path.join(args.out, "work"), args.clean)
+        if run([sys.executable, os.path.join(PACKAGING, "make_gcm.py"), dol, work,
+                "-o", iso, "--apploader", apploader, *game["args"]]) != 0:
             failed.append(key)
             continue
         print(f"OK -> {os.path.relpath(iso, ROOT)} ({os.path.getsize(iso) / 2**20:.0f} MiB)")

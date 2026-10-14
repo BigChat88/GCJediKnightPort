@@ -4,7 +4,8 @@ name: release
 # A push to main (a direct commit or a merged pull request) also publishes a
 # GitHub Release named after VERSION. Its main asset is a self-contained
 # "everything you need to build the disc images" bundle: drop in your own CD
-# images, run build.cmd / build.sh -- no Docker, no GameCube toolchain needed.
+# images, run build.cmd / build.sh -- no Docker, no GameCube toolchain needed
+# (the sound bank encoder comes built for Windows and Linux in tools/bin/).
 # A second asset holds the .elf/.map, to symbolicate crash dumps from hardware.
 on:
   push:
@@ -27,7 +28,7 @@ jobs:
       - name: Install build deps
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends python3-venv python3-pip git zip rsync ca-certificates
+          apt-get install -y --no-install-recommends python3-venv python3-pip git zip rsync ca-certificates gcc libc6-dev gcc-mingw-w64-x86-64
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,6 +51,18 @@ jobs:
           ./build_gamecube.sh
           ls -l build_gamecube/openjkdf2.dol build_gamecube/apploader.img
 
+      # The sound bank encoder (resource/sndbank.bin, every sound pre-encoded for the
+      # GameCube DSP) is a small C tool; ship it built so users don't need a compiler.
+      # pack_iso.py compiles it itself on other systems (e.g. macOS with cc).
+      - name: Build the sound bank encoder
+        run: |
+          set -eu
+          SRC=OpenJKDF2/packaging/gamecube/sndbank
+          mkdir -p toolbin
+          gcc -O2 -static -o toolbin/sndbank-linux-x86_64 "$SRC/sndbank.c" "$SRC/grok.c" -lm
+          x86_64-w64-mingw32-gcc -O2 -static -o toolbin/sndbank-windows-x86_64.exe "$SRC/sndbank.c" "$SRC/grok.c" -lm
+          ls -l toolbin
+
       - name: Stage the bundle
         id: stage
         run: |
@@ -62,6 +75,8 @@ jobs:
               tools gamedata/README.md output/README.md OpenJKDF2/packaging/gamecube \
             | rsync -a --files-from=- --from0 ./ "$DEST/"
           cp OpenJKDF2/build_gamecube/openjkdf2.dol OpenJKDF2/build_gamecube/apploader.img "$DEST/engine/"
+          mkdir -p "$DEST/tools/bin"
+          cp toolbin/* "$DEST/tools/bin/"
           {
             echo "GCJediKnight ${{ steps.ver.outputs.version }}"
             echo "commit:  ${GITHUB_SHA}"
