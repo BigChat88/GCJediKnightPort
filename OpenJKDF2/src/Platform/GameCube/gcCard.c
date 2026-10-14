@@ -86,6 +86,11 @@ static int      gcCard_writtenVideoPref = -1; // as stored in the newest setting
 
 static int      gcCard_aSlotOnCard[GCCARD_MAX_SLOTS + 1];
 static int      gcCard_aSlotOldLayout[GCCARD_MAX_SLOTS + 1]; // rewrite to get the banner/icon
+// Added: each save slot has two file names (..._sN.sav, ..._sNx.sav); this says
+// which one holds it. A new save is written under the other name and the old file
+// deleted only once that write has worked, so a write that fails half way (card
+// pulled, power cut, a card error) never destroys the save that was there.
+static int      gcCard_aSlotAlt[GCCARD_MAX_SLOTS + 1];
 static u32      gcCard_saveBlocksEstimate = GCCARD_DEFAULT_SAVE_BLOCKS;
 static char     gcCard_szLastError[160] = "";  // why the last gcCard_Save failed
 
@@ -118,9 +123,15 @@ static u32 gcCard_RoundUp(u32 len)
     return (len + gcCard_sectorSize - 1) & ~(gcCard_sectorSize - 1);
 }
 
+static void gcCard_SlotFilenameAlt(int n, int alt, char* buf, size_t len)
+{
+    snprintf(buf, len, alt ? "%s_s%dx.sav" : "%s_s%d.sav", gcGame_CardPrefix(), n);
+}
+
+// The file that holds slot n now.
 static void gcCard_SlotFilename(int n, char* buf, size_t len)
 {
-    snprintf(buf, len, "%s_s%d.sav", gcGame_CardPrefix(), n);
+    gcCard_SlotFilenameAlt(n, gcCard_aSlotAlt[n], buf, len);
 }
 
 static void gcCard_SlotPath(int n, char* buf, size_t len)
@@ -550,14 +561,39 @@ static int gcCard_WriteSlot(int n, const gcDvdData* pData)
         gcCard_SetError("out of memory for save %d (zlib)", n);
         return 0;
     }
-    char name[32];
-    gcCard_SlotFilename(n, name, sizeof(name));
+    // Under the other name if the card has room for both files for a moment
+    // (blocks free, plus those of a leftover file under that name); else in
+    // place, as before.
+    char name[32], oldName[32];
+    int alt = gcCard_aSlotAlt[n];
+    int target = alt;
+    gcCard_SlotFilenameAlt(n, alt, oldName, sizeof(oldName));
+    if (gcCard_aSlotOnCard[n]) {
+        u16 freeBlocks = 0;
+        u32 have = 0;
+        if (CARD_GetFreeBlocks(gcCard_slot, &freeBlocks) >= 0) have = freeBlocks;
+        char other[32];
+        gcCard_SlotFilenameAlt(n, !alt, other, sizeof(other));
+        card_file f;
+        if (CARD_Open(gcCard_slot, other, &f) >= 0) {
+            have += (u32)f.len / gcCard_sectorSize;
+            CARD_Close(&f);
+        }
+        if (have >= fileLen / gcCard_sectorSize) target = !alt;
+        else printf("gcCard: no room for a second copy of save %d, writing it in place\n", n);
+    }
+    gcCard_SlotFilenameAlt(n, target, name, sizeof(name));
     s32 res = gcCard_WriteStream(name, fileLen, gcCard_FillSlotSector, &st);
     bEnd = st.d.bEnd;
     deflateEnd(&st.d.zs);
     if (res >= 0 && !bEnd) {
         gcCard_SetError("save %d: compressed data didn't fit", n);
         return 0;
+    }
+    if (res >= 0 && target != alt) {
+        // The new copy is complete: now the old one can go.
+        CARD_Delete(gcCard_slot, oldName);
+        gcCard_aSlotAlt[n] = target;
     }
     if (res < 0) {
         printf("gcCard: writing %s failed (%d)\n", name, (int)res);
@@ -567,6 +603,58 @@ static int gcCard_WriteSlot(int n, const gcDvdData* pData)
     if (blocks > gcCard_saveBlocksEstimate) gcCard_saveBlocksEstimate = blocks;
     printf("gcCard: %s saved (%u -> %u bytes, %u blocks)\n", name, pData->size, compLen, blocks);
     return 1;
+}
+
+// Whether a slot file is complete: its header and the checksum of its data.
+static int gcCard_SlotFileIntact(const char* name)
+{
+    u32 len = 0;
+    u8* buf = gcCard_ReadAll(name, &len);
+    if (!buf) return 0;
+    u32 hdr[4];
+    memcpy(hdr, buf + 0x40, sizeof(hdr));
+    u32 dataOff = hdr[0] == GCCARD_SLOT_MAGIC_V1 ? 0x50 : GCCARD_DATA_OFF;
+    int ok = (hdr[0] == GCCARD_SLOT_MAGIC || hdr[0] == GCCARD_SLOT_MAGIC_V1)
+             && len >= dataOff && hdr[2] <= len - dataOff
+             && gcCard_Checksum(buf + dataOff, hdr[2], 0) == hdr[3];
+    free(buf);
+    return ok;
+}
+
+static u32 gcCard_FileTime(const char* name)
+{
+    card_file f;
+    card_stat st;
+    u32 t = 0;
+    if (CARD_Open(gcCard_slot, name, &f) < 0) return 0;
+    if (CARD_GetStatus(gcCard_slot, f.filenum, &st) >= 0) t = st.time;
+    CARD_Close(&f);
+    return t;
+}
+
+// Which of slot n's two names holds it. Both are only there after a write that
+// was cut off before the old file was deleted (or right after a successful one):
+// keep the newest complete file and delete the other.
+static int gcCard_PickSlotFile(int n)
+{
+    char a[32], b[32];
+    gcCard_SlotFilenameAlt(n, 0, a, sizeof(a));
+    gcCard_SlotFilenameAlt(n, 1, b, sizeof(b));
+    card_file f;
+    int hasA = CARD_Open(gcCard_slot, a, &f) >= 0;
+    if (hasA) CARD_Close(&f);
+    int hasB = CARD_Open(gcCard_slot, b, &f) >= 0;
+    if (hasB) CARD_Close(&f);
+    if (!hasA || !hasB) return hasB;
+
+    int okA = gcCard_SlotFileIntact(a), okB = gcCard_SlotFileIntact(b);
+    int pick;
+    if (okA != okB) pick = okB;
+    else pick = gcCard_FileTime(b) > gcCard_FileTime(a);
+    printf("gcCard: save %d has two copies (%s), keeping %s\n", n,
+           okA && okB ? "both intact" : "one damaged", pick ? b : a);
+    CARD_Delete(gcCard_slot, pick ? a : b);
+    return pick;
 }
 
 // gcDvd slot loader: fetch save slot n and hand it over decompressed, a piece at
@@ -629,9 +717,13 @@ static int gcCard_SyncSlots(void)
         {
             case GCDVD_SLOT_ABSENT:
                 if (gcCard_aSlotOnCard[n]) {
+                    char other[32];
+                    gcCard_SlotFilenameAlt(n, !gcCard_aSlotAlt[n], other, sizeof(other));
                     gcCard_NoticeBegin();
                     CARD_Delete(gcCard_slot, name);
+                    CARD_Delete(gcCard_slot, other); // a leftover copy, if any
                     gcCard_aSlotOnCard[n] = 0;
+                    gcCard_aSlotAlt[n] = 0;
                     printf("gcCard: %s deleted\n", name);
                 }
                 break;
@@ -812,6 +904,7 @@ void gcCard_Init(void)
     // Save slots: only their sizes now; the data stays on the card until opened.
     for (int n = 1; n <= GCCARD_MAX_SLOTS; n++) {
         char name[32], path[64];
+        gcCard_aSlotAlt[n] = gcCard_PickSlotFile(n);
         gcCard_SlotFilename(n, name, sizeof(name));
         gcCard_SlotPath(n, path, sizeof(path));
         card_file file;
