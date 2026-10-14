@@ -1076,6 +1076,93 @@ static void std3D_DrawGlow(void)
     std3D_SetSceneState();
 }
 
+// --- Underwater ripple ---------------------------------------------------------------
+// While the camera is in an underwater sector the 3D view wobbles: the scene is
+// copied out of the EFB at half size (soft, which suits being under water) and
+// drawn back over the screen on a grid whose texture coordinates sway with time.
+// 150 KiB, allocated the first time it's needed while the option is on (default).
+#define STD3D_WATER_W     320
+#define STD3D_WATER_H     240
+#define STD3D_WATER_COLS  16
+#define STD3D_WATER_ROWS  12
+#define STD3D_WATER_AMP   0.006f   // sway, in texture units (~2 px on screen)
+static int      std3D_gcbWater = -1;
+static int      std3D_bUnderwater = 0;
+static void*    std3D_pWater = NULL;
+static GXTexObj std3D_waterObj;
+
+int std3D_GcGetWater(void)
+{
+    if (std3D_gcbWater < 0) std3D_gcbWater = wuRegistry_GetBool("gcWater", 1) ? 1 : 0;
+    return std3D_gcbWater;
+}
+
+void std3D_GcSetWater(int b)
+{
+    std3D_gcbWater = b ? 1 : 0;
+    wuRegistry_SaveBool("gcWater", std3D_gcbWater);
+    if (!std3D_gcbWater && std3D_pWater) {
+        GX_DrawDone(); // the GPU may still read it
+        free(std3D_pWater);
+        std3D_pWater = NULL;
+    }
+}
+
+// From sithRender, every frame: is the camera under water?
+void std3D_GcSetUnderwater(int b)
+{
+    std3D_bUnderwater = b;
+}
+
+static void std3D_DrawUnderwater(void)
+{
+    if (!std3D_bUnderwater || !std3D_GcGetWater() || jkGuiBuildMulti_bRendering) return;
+    if (!std3D_pWater) {
+        std3D_pWater = memalign(32, STD3D_WATER_W * STD3D_WATER_H * 2);
+        if (!std3D_pWater) return;
+        GX_InitTexObj(&std3D_waterObj, std3D_pWater, STD3D_WATER_W, STD3D_WATER_H, GX_TF_RGB565, GX_CLAMP, GX_CLAMP, GX_FALSE);
+        GX_InitTexObjFilterMode(&std3D_waterObj, GX_LINEAR, GX_LINEAR);
+    }
+    int W = gcSystem_pRmode->fbWidth, H = gcSystem_pRmode->efbHeight;
+    std3D_GlowCopy(0, 0, W, H, GX_TF_RGB565, 1, std3D_pWater);
+
+    std3D_LoadOrthoProjection();
+    GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+    GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+    GX_SetNumTexGens(1);
+    GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+    GX_SetNumTevStages(1);
+    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0, GX_REPLACE);
+    GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
+    GX_LoadTexObj(&std3D_waterObj, GX_TEXMAP0);
+
+    // Two slow waves across each other; the edges stay put (no smear from clamping).
+    float t = (float)(stdPlatform_GetTimeMsec() % 100000u) * 0.001f;
+    static float aU[STD3D_WATER_ROWS + 1][STD3D_WATER_COLS + 1];
+    static float aV[STD3D_WATER_ROWS + 1][STD3D_WATER_COLS + 1];
+    for (int r = 0; r <= STD3D_WATER_ROWS; r++)
+        for (int c = 0; c <= STD3D_WATER_COLS; c++) {
+            float u = (float)c / STD3D_WATER_COLS, v = (float)r / STD3D_WATER_ROWS;
+            int bEdge = !r || !c || r == STD3D_WATER_ROWS || c == STD3D_WATER_COLS;
+            aU[r][c] = u + (bEdge ? 0.0f : STD3D_WATER_AMP * sinf(v * 12.0f + t * 2.1f));
+            aV[r][c] = v + (bEdge ? 0.0f : STD3D_WATER_AMP * cosf(u * 9.0f + t * 1.7f));
+        }
+    const float cw = (float)STD3D_SCREEN_W / STD3D_WATER_COLS, ch = (float)STD3D_SCREEN_H / STD3D_WATER_ROWS;
+    GX_Begin(GX_QUADS, GX_VTXFMT0, STD3D_WATER_ROWS * STD3D_WATER_COLS * 4);
+    for (int r = 0; r < STD3D_WATER_ROWS; r++)
+        for (int c = 0; c < STD3D_WATER_COLS; c++) {
+            float x0 = c * cw, x1 = (c + 1) * cw, y0 = r * ch, y1 = (r + 1) * ch;
+            GX_Position3f32(x0, y0, 0.0f); GX_Color1u32(0xFFFFFFFF); GX_TexCoord2f32(aU[r][c],         aV[r][c]);
+            GX_Position3f32(x1, y0, 0.0f); GX_Color1u32(0xFFFFFFFF); GX_TexCoord2f32(aU[r][c + 1],     aV[r][c + 1]);
+            GX_Position3f32(x1, y1, 0.0f); GX_Color1u32(0xFFFFFFFF); GX_TexCoord2f32(aU[r + 1][c + 1], aV[r + 1][c + 1]);
+            GX_Position3f32(x0, y1, 0.0f); GX_Color1u32(0xFFFFFFFF); GX_TexCoord2f32(aU[r + 1][c],     aV[r + 1][c]);
+        }
+    GX_End();
+
+    std3D_SetSceneState();
+}
+
 static void std3D_DrawHandIcon(void)
 {
     if (!std3D_bHandTexInit) {
@@ -1143,6 +1230,7 @@ int std3D_EndScene()
     std3D_FogOff(); // the overlays below are not part of the scene
 
     if (std3D_bDrew3D && jkGame_isDDraw) {
+        std3D_DrawUnderwater();
         std3D_DrawGlow();
         std3D_DrawColorEffectAdd();
         std3D_bDrew3D = 0;

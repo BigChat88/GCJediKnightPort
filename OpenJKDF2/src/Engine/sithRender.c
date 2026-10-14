@@ -365,6 +365,14 @@ void sithRender_Draw()
     rdSetRenderOptions(rdGetRenterOptions() | 1);
 #endif
 
+#ifdef TARGET_GAMECUBE
+    // Added: the optional underwater ripple (std3D).
+    {
+        extern void std3D_GcSetUnderwater(int b);
+        std3D_GcSetUnderwater(sithCamera_g_pCurCamera && sithCamera_g_pCurCamera->sector
+                              && (sithCamera_g_pCurCamera->sector->flags & SITH_SECTOR_UNDERWATER));
+    }
+#endif
     if (!sithCamera_g_pCurCamera || !sithCamera_g_pCurCamera->sector)
         return;
 
