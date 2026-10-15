@@ -19,7 +19,6 @@
 
 #include "gcDvd.h"
 #include "gcGame.h"
-#include "gcExfat.h"
 #include "gcSystem.h"
 #include "gcAram.h"
 
@@ -29,7 +28,7 @@
 #include <ogc/lwp_watchdog.h>
 #include <sys/dirent.h>
 #include <dirent.h>
-#include <fat.h>
+#include <dvm.h>
 #include <sdcard/gcsd.h>
 #include <sdcard/card_cmn.h>
 #include <sdcard/card_io.h>
@@ -170,9 +169,11 @@ static inline const char* gcDvd_Name(uint32_t idx)
 
 // The "disc" is either the real drive or, when booted from an SD card through
 // Swiss, the disc image file itself (Swiss's DVD emulation only hooks the official
-// SDK's drive routines, not libogc's). The image lives on a FAT card (libfat) or an
-// exFAT one (gcExfat). The main and music threads share it under a mutex.
-enum { GCDVD_SRC_DRIVE, GCDVD_SRC_FAT, GCDVD_SRC_EXFAT };
+// SDK's drive routines, not libogc's). libogc2 core: the card is mounted with
+// libdvm, FAT or exFAT alike (the libogc core has its own exFAT reader, gcExfat),
+// and the image is read as a file. The main and music threads share it under a
+// mutex.
+enum { GCDVD_SRC_DRIVE, GCDVD_SRC_SD };
 static int     gcDvd_source = GCDVD_SRC_DRIVE;
 static FILE*   gcDvd_pImage = NULL;
 static char    gcDvd_imagePath[256] = "";
@@ -185,9 +186,7 @@ static char    gcDvd_szSdSpeed[96] = "not measured";
 const char* gcDvd_GetSdInfo(char* buf, int len)
 {
     if (gcDvd_source == GCDVD_SRC_DRIVE) return NULL;
-    snprintf(buf, len, "Game image: %s (%s)\nSD speed:   %s\n", gcDvd_imagePath,
-             gcDvd_source == GCDVD_SRC_EXFAT ? "exFAT" : "FAT",
-             gcDvd_source == GCDVD_SRC_EXFAT ? gcDvd_szSdSpeed : "not measured on FAT");
+    snprintf(buf, len, "Game image: %s\nSD speed:   %s\n", gcDvd_imagePath, gcDvd_szSdSpeed);
     return buf;
 }
 
@@ -203,37 +202,37 @@ void gcDvd_ResumeReads(void)
 
 volatile uint32_t gcDvd_statReadErrors = 0; // SD read errors (each retry counts)
 
+static int gcDvd_ReadFile(void* dst, uint32_t len, int64_t offset)
+{
+    clearerr(gcDvd_pImage);
+    int ok = !fseeko(gcDvd_pImage, (off_t)offset, SEEK_SET);
+    size_t got = ok ? fread(dst, 1, len, gcDvd_pImage) : 0;
+    // Reads are rounded up for the drive; past the end of the image is just zeroes.
+    if (got < len) memset((uint8_t*)dst + got, 0, len - got);
+    return ok && (got > 0 || len == 0) && !ferror(gcDvd_pImage);
+}
+
 static int gcDvd_ReadImage(void* dst, uint32_t len, int64_t offset)
 {
-    int ok;
     LWP_MutexLock(gcDvd_imageMutex);
-    if (gcDvd_source == GCDVD_SRC_EXFAT) {
-        ok = gcExfat_Read(dst, len, offset);
-        if (!ok && gcDvd_bSdFast) {
-            // Not every card copes with 32 MHz for long; drop back and retry.
-            gcDvd_bSdFast = 0;
-            sdgecko_setSpeed(gcDvd_sdDrive, EXI_SPEED16MHZ);
-            printf("gcDvd: SD read error at 32 MHz, back to 16 MHz\n");
-            ok = gcExfat_Read(dst, len, offset);
-        }
-        // Added: a failed read used to end up as an early end of file in the
-        // engine (a level failing to parse at a valid line, a bitmap not loading).
-        // Transient SD errors happen: give the card a moment and try again.
-        for (int attempt = 0; !ok && attempt < 4; attempt++) {
-            gcDvd_statReadErrors++;
-            printf("gcDvd: SD read error at 0x%llx (+%u), retrying\n", (long long)offset, len);
-            usleep(20 * 1000);
-            ok = gcExfat_Read(dst, len, offset);
-        }
-        if (!ok) gcDvd_statReadErrors++;
+    int ok = gcDvd_ReadFile(dst, len, offset);
+    if (!ok && gcDvd_bSdFast) {
+        // Not every card copes with 32 MHz for long; drop back and retry.
+        gcDvd_bSdFast = 0;
+        sdgecko_setSpeed(gcDvd_sdDrive, EXI_SPEED16MHZ);
+        printf("gcDvd: SD read error at 32 MHz, back to 16 MHz\n");
+        ok = gcDvd_ReadFile(dst, len, offset);
     }
-    else {
-        ok = !fseek(gcDvd_pImage, (long)offset, SEEK_SET);
-        size_t got = ok ? fread(dst, 1, len, gcDvd_pImage) : 0;
-        // Reads are rounded up for the drive; past the end of the image is just zeroes.
-        if (got < len) memset((uint8_t*)dst + got, 0, len - got);
-        ok = ok && (got > 0 || len == 0);
+    // A failed read used to end up as an early end of file in the engine (a
+    // level failing to parse at a valid line, a bitmap not loading). Transient
+    // SD errors happen: give the card a moment and try again.
+    for (int attempt = 0; !ok && attempt < 4; attempt++) {
+        gcDvd_statReadErrors++;
+        printf("gcDvd: SD read error at 0x%llx (+%u), retrying\n", (long long)offset, len);
+        usleep(20 * 1000);
+        ok = gcDvd_ReadFile(dst, len, offset);
     }
+    if (!ok) gcDvd_statReadErrors++;
     LWP_MutexUnlock(gcDvd_imageMutex);
     return ok;
 }
@@ -1752,8 +1751,20 @@ static int gcDvd_ScanForImage(const char* dir, int depth)
 
 static void gcDvd_TuneSdSpeed(void);
 
+// libdvm with the FAT and exFAT drivers of libogc2's libfat, registered here
+// rather than through dvmInit: that one also mounts a GC Loader as "dvd", the
+// name this file uses for the disc.
+extern const DvmFsDriver g_vfatFsDriver, g_exfatFsDriver;
+extern unsigned g_dvmDefaultCachePages, g_dvmDefaultSectorsPerPage;
+
 static int gcDvd_FindImageOnSd(void)
 {
+    static int bDrivers = 0;
+    if (!bDrivers) {
+        bDrivers = 1;
+        dvmRegisterFsDriver(&g_vfatFsDriver);
+        dvmRegisterFsDriver(&g_exfatFsDriver);
+    }
     // SD2SP2 (serial port 2), then SD Gecko style adapters in slot B and slot A.
     static const DISC_INTERFACE* const aIfaces[] = { &__io_gcsd2, &__io_gcsdb, &__io_gcsda };
     static const char* const aNames[] = { "SD2SP2", "slot B", "slot A" };
@@ -1767,24 +1778,24 @@ static int gcDvd_FindImageOnSd(void)
             continue;
         }
         printf("gcDvd: looking for an SD card in %s...\n", aNames[i]);
-        if (fatMountSimple("sd", aIfaces[i])) {
-            printf("gcDvd: FAT SD card found, searching for openjkdf2.iso\n");
+        unsigned numVolumes = dvmProbeMountDiscIface("sd", (DISC_INTERFACE*)aIfaces[i],
+                                                     g_dvmDefaultCachePages, g_dvmDefaultSectorsPerPage);
+        if (numVolumes) {
+            printf("gcDvd: SD card mounted (%u volume%s), searching for openjkdf2.iso\n",
+                   numVolumes, numVolumes == 1 ? "" : "s");
             if (gcDvd_IsOurImage("sd:/openjkdf2.iso"))
                 strcpy(gcDvd_imagePath, "sd:/openjkdf2.iso");
             if (gcDvd_imagePath[0] || gcDvd_ScanForImage("sd:/games", 2) || gcDvd_ScanForImage("sd:", 0)) {
                 gcDvd_pImage = fopen(gcDvd_imagePath, "rb");
                 if (gcDvd_pImage) {
-                    gcDvd_source = GCDVD_SRC_FAT;
+                    printf("gcDvd: game image %s\n", gcDvd_imagePath);
+                    gcDvd_source = GCDVD_SRC_SD;
+                    gcDvd_sdDrive = aSdDrive[i];
+                    gcDvd_TuneSdSpeed();
                     return 1;
                 }
             }
-            fatUnmount("sd:/");
-        }
-        else if (gcExfat_FindImage(aIfaces[i], GCDVD_DISC_ID, gcDvd_imagePath, sizeof(gcDvd_imagePath))) {
-            gcDvd_source = GCDVD_SRC_EXFAT;
-            gcDvd_sdDrive = aSdDrive[i];
-            gcDvd_TuneSdSpeed();
-            return 1;
+            dvmUnmountVolume("sd");
         }
         printf("gcDvd: no disc image found in %s\n", aNames[i]);
         gcDvd_imagePath[0] = 0;
