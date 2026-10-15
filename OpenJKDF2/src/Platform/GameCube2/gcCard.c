@@ -169,27 +169,25 @@ static void gcCard_SlotPath(int n, char* buf, size_t len)
 
 static int gcCard_bMountTried = 0;
 
-static void gcCard_MountCallback(s32 chn, s32 result)
-{
-}
-
-// Mounting a card that is still locked since power-on runs the unlock exchange
-// as a DSP task. That only completes while the DSP is free: once AESND's microcode
-// owns it, the task never runs and a synchronous CARD_Mount sleeps forever (real
-// hardware only; Dolphin's cards start unlocked). So this runs from gcSystem_Init
-// before the DSP is started, and polls with a timeout instead of CARD_Mount.
+// libogc2: probe the slot (is there a card, which size), then a plain CARD_Mount.
+// libogc2 unlocks a card even while the audio microcode owns the DSP, so the
+// libogc core's dance (mount before AESND starts, async + timeout) isn't needed;
+// it still runs early only because the saved video mode is read from the card.
 static s32 gcCard_MountSlot(int slot)
 {
-    s32 res = CARD_MountAsync(slot, gcCard_workArea, NULL, gcCard_MountCallback);
-    if (res < 0) return res;
+    s32 memSize = 0, sectorSize = 0, res;
     u64 start = gettime();
-    while ((res = CARD_GetErrorCode(slot)) == CARD_ERROR_BUSY) {
-        if (diff_msec(start, gettime()) > GCCARD_MOUNT_TIMEOUT_MS) {
-            printf("gcCard: slot %c did not answer\n", 'A' + slot);
-            return CARD_ERROR_BUSY;
-        }
-        VIDEO_WaitVSync();
+    // The slot may still be finding out what's in it.
+    while ((res = CARD_ProbeEx(slot, &memSize, &sectorSize)) == CARD_ERROR_BUSY
+           && diff_msec(start, gettime()) < GCCARD_MOUNT_TIMEOUT_MS)
+        usleep(10 * 1000);
+    if (res < 0) {
+        printf("gcCard: slot %c: no card (probe %d)\n", 'A' + slot, (int)res);
+        return res;
     }
+    res = CARD_Mount(slot, gcCard_workArea, NULL);
+    printf("gcCard: slot %c: %d Mbit card, sector %d, mount %d\n", 'A' + slot,
+           (int)memSize, (int)sectorSize, (int)res);
     return res;
 }
 
@@ -879,6 +877,10 @@ void gcCard_Init(void)
     gcDvd_SetWriteCallback(gcCard_OnOverlayWrite);
     gcDvd_SetSlotLoader(gcCard_LoadSlot);
 
+    // The early attempt (gcCard_EarlyMount) ran before the log was up: if it
+    // failed, once more where its messages show.
+    if (gcCard_slot < 0)
+        gcCard_bMountTried = 0;
     if (!gcCard_MountAny()) {
         printf("gcCard: no memory card, saves will not persist\n");
         return;

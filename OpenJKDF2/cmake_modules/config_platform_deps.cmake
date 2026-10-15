@@ -269,8 +269,9 @@ if(TARGET_TWL)
     list(REMOVE_ITEM ENGINE_SOURCE_FILES ${PROJECT_SOURCE_DIR}/src/Main/jkQuakeConsole.c)
 endif()
 
-if(TARGET_GAMECUBE)
-    # gcHeap.c serves malloc & co from dlmalloc (see there).
+if(TARGET_GAMECUBE AND GC_CORE_DIR STREQUAL "GameCube")
+    # gcHeap.c serves malloc & co from dlmalloc (see there). The libogc2 core uses
+    # libogc2's own malloc, which is dlmalloc already.
     list(APPEND ENGINE_SOURCE_FILES ${PROJECT_SOURCE_DIR}/src/Platform/TWL/dlmalloc.c)
 endif()
 
