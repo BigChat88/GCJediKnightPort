@@ -1259,7 +1259,7 @@ void stdPlatform_PrintHeapStats()
 
 #ifdef TARGET_GAMECUBE
 #include <malloc.h>
-#include "Platform/GameCube/gcOgc.h"
+#include "gcOgc.h"
 
 // Added: heap usage (newlib malloc arena) and what's left of MEM1 for it to grow into.
 void stdPlatform_PrintHeapStats()

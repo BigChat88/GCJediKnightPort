@@ -34,7 +34,7 @@ macro(plat_initialize)
     if(DEFINED ENV{GC_TRACE} AND NOT "$ENV{GC_TRACE}" STREQUAL "")
         add_compile_definitions(GC_TRACE)
         add_compile_options(-finstrument-functions
-            -finstrument-functions-exclude-file-list=/opt/devkitpro,Platform/GameCube)
+            -finstrument-functions-exclude-file-list=/opt/devkitpro,Platform/GameCube)  # (GameCube2 too: same prefix)
         message(STATUS "GC: call-stack tracing enabled")
     endif()
 
@@ -113,6 +113,20 @@ macro(plat_initialize)
 
     set(TARGET_GAMECUBE TRUE)
 
+    # Two platform cores: src/Platform/GameCube on devkitPro's libogc (the stable
+    # one, released), and src/Platform/GameCube2 on libogc2 (Extrems' fork, built
+    # with packaging/gamecube/Dockerfile.libogc2), where the port is being moved
+    # over to what libogc2 provides. Picked by the OGC library the toolchain uses;
+    # the engine includes the core's headers by name (gcDvd.h, ...).
+    if("${DKP_OGC_PLATFORM_LIBRARY}" STREQUAL "libogc2")
+        set(GC_CORE_DIR GameCube2)
+        add_compile_definitions(GC_LIBOGC2)
+    else()
+        set(GC_CORE_DIR GameCube)
+    endif()
+    include_directories(${PROJECT_SOURCE_DIR}/src/Platform/${GC_CORE_DIR})
+    message(STATUS "GC: platform core src/Platform/${GC_CORE_DIR}")
+
     # GameCube.cmake already injects -mogc -mcpu=750 -meabi -mhard-float.
     add_compile_options(-Wall -Wno-unused-variable -Wno-parentheses -Wno-missing-braces)
     add_compile_options(-ffunction-sections -fdata-sections -fshort-wchar)
@@ -129,7 +143,12 @@ macro(plat_specific_deps)
 endmacro()
 
 macro(plat_link_and_package)
-    target_link_libraries(${BIN_NAME} PRIVATE -lfat -laesnd -lbba -lz -logc -lm)
+    if(GC_CORE_DIR STREQUAL "GameCube2")
+        # (No -laesnd: gcAesnd.c is our own aesndlib, with the DSP mixer built in.)
+        target_link_libraries(${BIN_NAME} PRIVATE -lfat -lbba -lz -logc -lm)
+    else()
+        target_link_libraries(${BIN_NAME} PRIVATE -lfat -laesnd -lbba -lz -logc -lm)
+    endif()
     # zlib (devkitPro portlibs): compressed save games on the memory card.
     target_include_directories(sith_engine PRIVATE $ENV{DEVKITPRO}/portlibs/ppc/include)
     target_link_directories(${BIN_NAME} PRIVATE $ENV{DEVKITPRO}/portlibs/ppc/lib)

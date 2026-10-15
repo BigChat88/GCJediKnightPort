@@ -21,8 +21,8 @@
 
 #ifdef STDSOUND_GAMECUBE
 
-#include "Platform/GameCube/gcOgc.h"
-#include "Platform/GameCube/gcVoice.h"
+#include "gcOgc.h"
+#include "gcVoice.h"
 #include <aesndlib.h>
 #include <ogc/lwp_watchdog.h>
 #include <malloc.h>

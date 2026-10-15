@@ -1,5 +1,5 @@
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/jkGUICheats.h"
+#include "jkGUICheats.h"
 #endif
 #include "jkGame.h"
 
@@ -29,7 +29,7 @@
 #include "stdPlatform.h"
 #include "jk.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcStats.h"
+#include "gcStats.h"
 #endif
 
 #if defined(TARGET_TWL)

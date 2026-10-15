@@ -20,8 +20,8 @@
 
 #ifdef TARGET_GAMECUBE
 
-#include "Platform/GameCube/gcOgc.h"
-#include "Platform/GameCube/gcInput.h"
+#include "gcOgc.h"
+#include "gcInput.h"
 
 extern int jkGuiBuildMulti_bRendering;
 

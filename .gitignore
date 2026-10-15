@@ -12,6 +12,8 @@
 *.elf
 /OpenJKDF2/build_gamecube/
 /OpenJKDF2/build_gamecube_dev/
+/OpenJKDF2/build_gamecube_ogc2/
+/OpenJKDF2/build_gamecube_ogc2_dev/
 # prebuilt engine in release bundles (built by CI)
 /engine/
 # CI staging

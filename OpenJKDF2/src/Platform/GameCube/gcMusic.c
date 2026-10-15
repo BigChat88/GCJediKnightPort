@@ -16,9 +16,9 @@
 
 #ifdef STDSOUND_GAMECUBE
 
-#include "Platform/GameCube/gcOgc.h"
-#include "Platform/GameCube/gcDvd.h"
-#include "Platform/GameCube/gcVoice.h"
+#include "gcOgc.h"
+#include "gcDvd.h"
+#include "gcVoice.h"
 #include <aesndlib.h>
 #include <malloc.h>
 #include <stdio.h>

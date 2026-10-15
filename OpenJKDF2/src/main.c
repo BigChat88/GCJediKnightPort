@@ -351,11 +351,11 @@ KOS_INIT_FLAGS(INIT_DEFAULT | INIT_CONTROLLER);
 
 #ifdef TARGET_GAMECUBE
 #include <unistd.h>
-#include "Platform/GameCube/gcSystem.h"
-#include "Platform/GameCube/gcDvd.h"
-#include "Platform/GameCube/gcGame.h"
-#include "Platform/GameCube/gcCard.h"
-#include "Platform/GameCube/gcNet.h"
+#include "gcSystem.h"
+#include "gcDvd.h"
+#include "gcGame.h"
+#include "gcCard.h"
+#include "gcNet.h"
 #endif // TARGET_GAMECUBE
 
 int main(int argc, char** argv)

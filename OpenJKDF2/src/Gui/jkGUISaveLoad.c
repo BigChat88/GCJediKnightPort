@@ -21,8 +21,8 @@
 
 #include "jk.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcCard.h"
-#include "Platform/GameCube/gcDvd.h"
+#include "gcCard.h"
+#include "gcDvd.h"
 #include "Gui/jkGUIDialog.h"
 #include "Gui/jkGUITitle.h"
 #include "Main/jkMain.h"

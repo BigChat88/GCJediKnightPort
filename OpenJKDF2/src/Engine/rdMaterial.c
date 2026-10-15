@@ -15,7 +15,7 @@
 #endif
 
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcAram.h" // Added: material pixels in ARAM
+#include "gcAram.h" // Added: material pixels in ARAM
 extern int stdDisplay_gcNoPixels;
 int stdDisplay_GcAllocPixels(tVBuffer* out);
 int std3D_GcCanUseAram(const tRasterInfo* fmt);

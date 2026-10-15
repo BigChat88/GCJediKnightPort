@@ -19,7 +19,7 @@
 #include "jk.h"
 #include "types.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/jkGUIGcKeyboard.h"
+#include "jkGUIGcKeyboard.h"
 #endif
 
 #include <math.h>

@@ -1,5 +1,32 @@
 #include "dlmalloc-config.h"
 
+#ifdef TARGET_GAMECUBE
+// Added: libogc2's own malloc is dlmalloc too, mspace functions included: ours
+// get a prefix so the two don't clash at link time (devkitPro's libogc has none).
+#define create_mspace               gcdl_create_mspace
+#define create_mspace_with_base     gcdl_create_mspace_with_base
+#define destroy_mspace              gcdl_destroy_mspace
+#define mspace_track_large_chunks   gcdl_mspace_track_large_chunks
+#define mspace_malloc               gcdl_mspace_malloc
+#define mspace_free                 gcdl_mspace_free
+#define mspace_calloc               gcdl_mspace_calloc
+#define mspace_realloc              gcdl_mspace_realloc
+#define mspace_realloc_in_place     gcdl_mspace_realloc_in_place
+#define mspace_memalign             gcdl_mspace_memalign
+#define mspace_independent_calloc   gcdl_mspace_independent_calloc
+#define mspace_independent_comalloc gcdl_mspace_independent_comalloc
+#define mspace_bulk_free            gcdl_mspace_bulk_free
+#define mspace_footprint            gcdl_mspace_footprint
+#define mspace_max_footprint        gcdl_mspace_max_footprint
+#define mspace_footprint_limit      gcdl_mspace_footprint_limit
+#define mspace_set_footprint_limit  gcdl_mspace_set_footprint_limit
+#define mspace_mallinfo             gcdl_mspace_mallinfo
+#define mspace_usable_size          gcdl_mspace_usable_size
+#define mspace_malloc_stats         gcdl_mspace_malloc_stats
+#define mspace_trim                 gcdl_mspace_trim
+#define mspace_mallopt              gcdl_mspace_mallopt
+#endif
+
 /*
   Default header file for malloc-2.8.x, written by Doug Lea
   and released to the public domain, as explained at

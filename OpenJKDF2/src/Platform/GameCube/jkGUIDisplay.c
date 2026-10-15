@@ -10,7 +10,7 @@
 #include "Gui/jkGUIRend.h"
 #include "Gui/jkGUI.h"
 #include "Gui/jkGUISetup.h"
-#include "Platform/GameCube/gcSystem.h"
+#include "gcSystem.h"
 #include "stdPlatform.h"
 #include "jk.h"
 

@@ -24,9 +24,9 @@
 #include "World/jkPlayer.h"
 #include "Devices/sithSoundMixer.h"
 #include "Win95/stdSound.h"
-#include "Platform/GameCube/gcCard.h"
-#include "Platform/GameCube/gcDvd.h"
-#include "Platform/GameCube/gcSystem.h"
+#include "gcCard.h"
+#include "gcDvd.h"
+#include "gcSystem.h"
 #endif
 
 static jkGuiElement jkGuiSetup_buttons[9] = {

@@ -9,7 +9,7 @@
 #include "Win95/Video.h"
 #include "Win95/Window.h"
 #include "General/stdColor.h"
-#include "Platform/GameCube/gcAram.h"
+#include "gcAram.h"
 
 #include <string.h>
 #include <malloc.h>

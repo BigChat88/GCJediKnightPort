@@ -1,7 +1,7 @@
 #include "General/stdEndian.h"
 #include "stdGob.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcDvd.h"
+#include "gcDvd.h"
 #endif
 
 #include <stdio.h>

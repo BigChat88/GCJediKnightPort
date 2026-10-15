@@ -909,7 +909,7 @@ int jkGuiMultiplayer_ShowWaitHostSettings()
 }
 
 #ifdef GC_MP_TEST_join
-#include "Platform/GameCube/gcNet.h"
+#include "gcNet.h"
 #include <unistd.h>
 // Added: multiplayer test without menus (GC_MP_TEST=join): join the first game
 // found on the network with a default character, as the join screen would.

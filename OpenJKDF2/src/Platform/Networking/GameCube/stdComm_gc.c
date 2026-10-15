@@ -33,10 +33,10 @@
 #include "stdPlatform.h"
 #include "jk.h"
 
-#include "Platform/GameCube/gcNet.h"
-#include "Platform/GameCube/gcGame.h"
+#include "gcNet.h"
+#include "gcGame.h"
 
-#include "Platform/GameCube/gcOgc.h" // libogc without its BOOL
+#include "gcOgc.h" // libogc without its BOOL
 #include <network.h>
 #include <unistd.h>
 #include <string.h>

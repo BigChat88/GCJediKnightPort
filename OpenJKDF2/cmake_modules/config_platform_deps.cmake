@@ -284,7 +284,7 @@ if(TARGET_DREAMCAST)
 endif()
 
 if(TARGET_GAMECUBE)
-    file(GLOB TARGET_GAMECUBE_SRCS ${PROJECT_SOURCE_DIR}/src/Platform/GameCube/*.c)
+    file(GLOB TARGET_GAMECUBE_SRCS ${PROJECT_SOURCE_DIR}/src/Platform/${GC_CORE_DIR}/*.c)
     list(APPEND ENGINE_SOURCE_FILES ${TARGET_GAMECUBE_SRCS})
     # No hardware-accelerated dev console (it relies on the SDL2/GL UI text path).
     list(REMOVE_ITEM ENGINE_SOURCE_FILES ${PROJECT_SOURCE_DIR}/src/Main/jkQuakeConsole.c)

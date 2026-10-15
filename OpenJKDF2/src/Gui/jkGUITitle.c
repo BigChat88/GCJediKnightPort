@@ -9,8 +9,8 @@
 #include "stdPlatform.h"
 #include "jk.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcStats.h"
-#include "Platform/GameCube/gcDvd.h"
+#include "gcStats.h"
+#include "gcDvd.h"
 #endif
 #include "Gui/jkGUIRend.h"
 #include "Gui/jkGUI.h"

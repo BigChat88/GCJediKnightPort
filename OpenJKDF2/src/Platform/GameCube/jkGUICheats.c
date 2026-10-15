@@ -14,7 +14,7 @@
 #include <string.h>
 #include "Main/jkMain.h"
 #include "World/sithWorld.h"
-#include "Platform/GameCube/gcStats.h"
+#include "gcStats.h"
 #include "jk.h"
 
 enum

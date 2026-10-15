@@ -20,8 +20,8 @@
 #include "Gui/jkGUISetup.h"
 #include "Gui/jkGUISaveLoad.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcCard.h"
-#include "Platform/GameCube/gcNet.h"
+#include "gcCard.h"
+#include "gcNet.h"
 #endif
 #include "Gui/jkGUIMods.h"
 #include "Win95/stdComm.h"
