@@ -66,7 +66,13 @@ int jkPlayer_bUseOldPlayerPhysics = 0;
 int jkPlayer_bLedgeSqueeze = 0;
 flex_t jkPlayer_hudScale = 2.0;
 flex_t jkPlayer_crosshairLineWidth = 1.0;
-flex_t jkPlayer_crosshairScale = 1.0;
+// Added: the GameCube crosshair defaults smaller (0.6, 3 steps of the size slider).
+#ifdef TARGET_GAMECUBE
+#define JKPLAYER_DEFAULT_CROSSHAIR_SCALE 0.6
+#else
+#define JKPLAYER_DEFAULT_CROSSHAIR_SCALE 1.0
+#endif
+flex_t jkPlayer_crosshairScale = JKPLAYER_DEFAULT_CROSSHAIR_SCALE;
 flex_t jkPlayer_canonicalCogTickrate = CANONICAL_COG_TICKRATE;
 flex_t jkPlayer_canonicalPhysTickrate = 1.0 / 25.0;
 
@@ -191,7 +197,7 @@ void jkPlayer_StartupVars()
     sithCvar_RegisterBool("g_bLedgeSqueeze",            0,                          &jkPlayer_bLedgeSqueeze,            CVARFLAG_LOCAL);
     sithCvar_RegisterFlex("hud_scale",                  2.0,                        &jkPlayer_hudScale,                 CVARFLAG_LOCAL|CVARFLAG_RESETHUD);
     sithCvar_RegisterFlex("hud_crosshairLineWidth",     1.0,                        &jkPlayer_crosshairLineWidth,       CVARFLAG_LOCAL|CVARFLAG_RESETHUD);
-    sithCvar_RegisterFlex("hud_crosshairScale",         1.0,                        &jkPlayer_crosshairScale,           CVARFLAG_LOCAL|CVARFLAG_RESETHUD);
+    sithCvar_RegisterFlex("hud_crosshairScale",         JKPLAYER_DEFAULT_CROSSHAIR_SCALE,                        &jkPlayer_crosshairScale,           CVARFLAG_LOCAL|CVARFLAG_RESETHUD);
     sithCvar_RegisterBool("hud_setCrosshairOnLightsaber", 1,                        &jkPlayer_setCrosshairOnLightsaber, CVARFLAG_LOCAL);
     sithCvar_RegisterBool("hud_setCrosshairOnFist",     1,                          &jkPlayer_setCrosshairOnFist,       CVARFLAG_LOCAL);
     sithCvar_RegisterBool("hud_disableWeaponWaggle",    0,                          &jkPlayer_bDisableWeaponWaggle,     CVARFLAG_LOCAL);
@@ -239,7 +245,7 @@ void jkPlayer_ResetVars()
     jkPlayer_bLedgeSqueeze = 0;
     jkPlayer_hudScale = 2.0;
     jkPlayer_crosshairLineWidth = 1.0;
-    jkPlayer_crosshairScale = 1.0;
+    jkPlayer_crosshairScale = JKPLAYER_DEFAULT_CROSSHAIR_SCALE;
     jkPlayer_canonicalCogTickrate = CANONICAL_COG_TICKRATE;
     jkPlayer_canonicalPhysTickrate = CANONICAL_PHYS_TICKRATE;
 

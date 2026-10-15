@@ -686,11 +686,15 @@ void jkHud_Draw()
             tmpInt = stdColor_Indexed8ToRGB16(0x30u, (rdColor24 *)Video_aPalette, &Video_format.format);
         v24 = (int32_t)(v20 * 18.0 - -0.5);
         v25 = (int32_t)(v20 * 6.0 - -0.5);
-        
+
+#ifndef TARGET_GAMECUBE
+        // (GameCube: drawn by jkHud_DrawGPU only, which follows the crosshair
+        // size setting; these fixed-size lines showed up as a second crosshair.)
         rdPrimit2_DrawClippedLine(Video_pCanvas, v22 - v24, v23,       v22 - v25, v23,       tmpInt, -1);
         rdPrimit2_DrawClippedLine(Video_pCanvas, v22 + v25, v23,       v22 + v24, v23,       tmpInt, -1);
         rdPrimit2_DrawClippedLine(Video_pCanvas, v22,       v23 - v24, v22,       v23 - v25, tmpInt, -1);
         rdPrimit2_DrawClippedLine(Video_pCanvas, v22,       v23 + v25, v22,       v23 + v24, tmpInt, -1);
+#endif
     }
 
     rdScreenPoint tmpScreenPt;

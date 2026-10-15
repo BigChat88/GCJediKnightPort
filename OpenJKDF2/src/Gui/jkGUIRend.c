@@ -2778,6 +2778,50 @@ static int jkGuiRend_GcNumericStep(jkGuiMenu *pMenu, jkGuiElement *element, int 
 #define JKGUIREND_GC_LOCKED(m, e) 0
 #endif
 
+static void jkGuiRend_FocusMoveTo(jkGuiMenu *pMenu, jkGuiElement *focusedElement, jkGuiElement *element);
+
+#ifdef TARGET_GAMECUBE
+// Added: where "down" goes from an element when the nearest one below isn't the
+// right one (the host screen: from the game name to the left-hand list).
+#define JKGUIREND_GC_MAX_NAV 8
+static struct { jkGuiElement* pFrom; jkGuiElement* pTo; } jkGuiRend_aGcNavDown[JKGUIREND_GC_MAX_NAV];
+
+void jkGuiRend_GcSetNavDown(jkGuiElement *from, jkGuiElement *to)
+{
+    int iFree = -1;
+    for (int i = 0; i < JKGUIREND_GC_MAX_NAV; i++) {
+        if (jkGuiRend_aGcNavDown[i].pFrom == from) { iFree = i; break; }
+        if (iFree < 0 && !jkGuiRend_aGcNavDown[i].pFrom) iFree = i;
+    }
+    if (iFree < 0) return;
+    jkGuiRend_aGcNavDown[iFree].pFrom = to ? from : NULL;
+    jkGuiRend_aGcNavDown[iFree].pTo = to;
+}
+
+// Whether the click being handled comes from the A button (not from the mouse or
+// from moving through a list).
+static int jkGuiRend_gcbAPress = 0;
+
+// Moves the controller focus to an element (as if it had been reached with the
+// stick / d-pad).
+void jkGuiRend_GcFocus(jkGuiMenu *pMenu, jkGuiElement *element)
+{
+    if (!pMenu || !element || !element->bIsVisible) return;
+    jkGuiElement* cur = pMenu->focusedElement ? pMenu->focusedElement : pMenu->lastMouseOverClickable;
+    // Focusing a list runs its handlers: they must not take this for another A
+    // press (the host screen went episode -> level -> max rank on one press).
+    int bSavedAPress = jkGuiRend_gcbAPress;
+    jkGuiRend_gcbAPress = 0;
+    jkGuiRend_FocusMoveTo(pMenu, cur, element);
+    jkGuiRend_gcbAPress = bSavedAPress;
+}
+
+int jkGuiRend_GcIsAPress(void)
+{
+    return jkGuiRend_gcbAPress;
+}
+#endif
+
 void jkGuiRend_FocusElementDir(jkGuiMenu *pMenu, int32_t dir)
 {
     int32_t idx = 0;
@@ -2825,6 +2869,15 @@ void jkGuiRend_FocusElementDir(jkGuiMenu *pMenu, int32_t dir)
     }
 
 #ifdef TARGET_GAMECUBE
+    if (dir == FOCUS_DOWN && focusedElement->type != ELEMENT_LISTBOX) {
+        for (int i = 0; i < JKGUIREND_GC_MAX_NAV; i++) {
+            jkGuiElement* pTo = jkGuiRend_aGcNavDown[i].pTo;
+            if (jkGuiRend_aGcNavDown[i].pFrom == focusedElement && pTo && pTo->bIsVisible) {
+                jkGuiRend_FocusMoveTo(pMenu, focusedElement, pTo);
+                return;
+            }
+        }
+    }
     if ((dir == FOCUS_LEFT || dir == FOCUS_RIGHT)
         && jkGuiRend_GcNumericStep(pMenu, focusedElement, dir == FOCUS_RIGHT ? 1 : -1))
         return;
@@ -3022,7 +3075,14 @@ void jkGuiRend_FocusElementDir(jkGuiMenu *pMenu, int32_t dir)
 
     //printf("%u->%u, %u %u, %u %u\n", (int)(focusedElement - pMenu->paElements), (int)(bestCandidate - pMenu->paElements), focusedElement->rect.x, focusedElement->rect.y, bestCandidate->rect.x, bestCandidate->rect.y);
 
-    jkGuiElement* element = bestCandidate;
+    jkGuiRend_FocusMoveTo(pMenu, focusedElement, bestCandidate);
+}
+
+// The focus goes from focusedElement (may be NULL) to element (the end of
+// jkGuiRend_FocusElementDir, split out to be used on its own).
+static void jkGuiRend_FocusMoveTo(jkGuiMenu *pMenu, jkGuiElement *focusedElement, jkGuiElement *element)
+{
+    jkGuiElement* bestCandidate = element;
     if (!element) {
         return;
     }
@@ -3178,7 +3238,13 @@ void jkGuiRend_UpdateController()
             jkGuiRend_WindowHandler(0, WM_KEYFIRST, VK_RETURN, 0, 0);
             if (prevFocusedElement == jkGuiRend_activeMenu->focusedElement && pB1Menu == jkGuiRend_activeMenu) {
                 jkGuiRend_activeMenu->lastMouseDownClickable = jkGuiRend_activeMenu->lastMouseOverClickable;
+#ifdef TARGET_GAMECUBE
+                jkGuiRend_gcbAPress = 1;
+#endif
                 jkGuiRend_InvokeClicked(jkGuiRend_activeMenu->lastMouseOverClickable, jkGuiRend_activeMenu, jkGuiRend_mouseX, jkGuiRend_mouseY, 1);
+#ifdef TARGET_GAMECUBE
+                jkGuiRend_gcbAPress = 0;
+#endif
             }
             stdPlatform_Printf("a1\n");
         }

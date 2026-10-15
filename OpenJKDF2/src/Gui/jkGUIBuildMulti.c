@@ -1705,6 +1705,15 @@ int jkGuiBuildMulti_sub_41D830(jkGuiElement *pElement, jkGuiMenu *pMenu, int32_t
             jkGuiRend_UpdateAndDrawClickable(&jkGuiBuildMulti_menuLoadCharacter_buttons[11], pMenu, 1);
             jkGuiRend_UpdateAndDrawClickable(&jkGuiBuildMulti_menuLoadCharacter_buttons[13], pMenu, 1);
             jkGuiRend_UpdateAndDrawClickable(&jkGuiBuildMulti_menuLoadCharacter_buttons[15], pMenu, 1);
+#ifdef TARGET_GAMECUBE
+            // Added: A on the character list picks it and goes down to OK,
+            // instead of going straight into the game (as the host screen's lists).
+            if (jkGuiRend_GcIsAPress()) {
+                jkGuiRend_PlayWav(pMenu->soundClick);
+                jkGuiRend_GcFocus(pMenu, &jkGuiBuildMulti_menuLoadCharacter_buttons[22]);
+                return 0;
+            }
+#endif
         }
         return redraw != 0;
     }

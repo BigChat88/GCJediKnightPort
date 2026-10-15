@@ -57,6 +57,7 @@ static rdTri*     GL_tmpTris = NULL;
 static size_t     GL_tmpTrisAmt = 0;
 static void std3D_DrawRenderListReal(void);
 static void std3D_ApplyFog(void);
+static void std3D_DrawUIRects(void);
 
 // --- Texture cache -----------------------------------------------------------
 typedef struct gcTexEntry {
@@ -1235,6 +1236,7 @@ int std3D_EndScene()
         std3D_DrawColorEffectAdd();
         std3D_bDrew3D = 0;
     }
+    std3D_DrawUIRects(); // the crosshair (std3D_DrawUIClearedRect)
     if (std3D_bMenuPending) {
         std3D_SubmitMenuOverlay();
         std3D_bMenuPending = 0;
@@ -1936,5 +1938,55 @@ void std3D_ResetUIRenderList() {}
 int  std3D_AddBitmapToTextureCache(stdBitmap* texture, int mipIdx, int is_alpha_tex, int no_alpha) { return 0; }
 void std3D_DrawUIBitmapRGBA(stdBitmap* pBmp, int mipIdx, flex_t dstX, flex_t dstY, rdRect* srcRect, flex_t scaleX, flex_t scaleY, int bAlphaOverwrite, uint8_t color_r, uint8_t color_g, uint8_t color_b, uint8_t color_a) {}
 void std3D_DrawUIBitmap(stdBitmap* pBmp, int mipIdx, flex_t dstX, flex_t dstY, rdRect* srcRect, flex_t scale, int bAlphaOverwrite) {}
-void std3D_DrawUIClearedRect(uint8_t palIdx, rdRect* dstRect) {}
-void std3D_DrawUIClearedRectRGBA(uint8_t color_r, uint8_t color_g, uint8_t color_b, uint8_t color_a, rdRect* dstRect) {}
+// Added: solid rectangles the HUD asks for (the crosshair: jkHud_DrawGPU). It
+// was a stub, and the HUD's own software lines land in the middle of the menu
+// buffer, which only shows its status-bar regions here: no crosshair at all.
+// Queued and drawn over the scene at the end of the frame (std3D_DrawUIRects).
+#define STD3D_MAX_UI_RECTS 16
+typedef struct { float x0, y0, x1, y1; uint32_t rgba; } std3DUIRect;
+static std3DUIRect std3D_aUIRects[STD3D_MAX_UI_RECTS];
+static int std3D_numUIRects = 0;
+
+void std3D_DrawUIClearedRectRGBA(uint8_t color_r, uint8_t color_g, uint8_t color_b, uint8_t color_a, rdRect* dstRect)
+{
+    if (!dstRect || std3D_numUIRects >= STD3D_MAX_UI_RECTS) return;
+    float w = Video_menuBuffer.format.width, h = Video_menuBuffer.format.height;
+    if (!w || !h || jkGuiBuildMulti_bRendering) { w = STD3D_SCREEN_W; h = STD3D_SCREEN_H; }
+    float sx = STD3D_SCREEN_W / w, sy = STD3D_SCREEN_H / h;
+    std3DUIRect* r = &std3D_aUIRects[std3D_numUIRects++];
+    r->x0 = dstRect->x * sx;
+    r->y0 = dstRect->y * sy;
+    r->x1 = (dstRect->x + dstRect->width) * sx;
+    r->y1 = (dstRect->y + dstRect->height) * sy;
+    r->rgba = ((uint32_t)color_r << 24) | ((uint32_t)color_g << 16) | ((uint32_t)color_b << 8) | color_a;
+}
+
+void std3D_DrawUIClearedRect(uint8_t palIdx, rdRect* dstRect)
+{
+    // The display palette, else the level's (the HUD draws in the game's palette).
+    rdColor24 c = std3D_currentPalette[palIdx];
+    if (!c.r && !c.g && !c.b && std3D_GcColormap())
+        c = std3D_GcColormap()->colors[palIdx];
+    std3D_DrawUIClearedRectRGBA(c.r, c.g, c.b, 0xFF, dstRect);
+}
+
+static void std3D_DrawUIRects(void)
+{
+    if (!std3D_numUIRects) return;
+    std3D_LoadOrthoProjection();
+    GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+    GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+    std3D_boundBlend = -1;
+    std3D_BindUntextured();
+    GX_Begin(GX_QUADS, GX_VTXFMT0, std3D_numUIRects * 4);
+    for (int i = 0; i < std3D_numUIRects; i++) {
+        const std3DUIRect* r = &std3D_aUIRects[i];
+        GX_Position3f32(r->x0, r->y0, 0.0f); GX_Color1u32(r->rgba); GX_TexCoord2f32(0.0f, 0.0f);
+        GX_Position3f32(r->x1, r->y0, 0.0f); GX_Color1u32(r->rgba); GX_TexCoord2f32(0.0f, 0.0f);
+        GX_Position3f32(r->x1, r->y1, 0.0f); GX_Color1u32(r->rgba); GX_TexCoord2f32(0.0f, 0.0f);
+        GX_Position3f32(r->x0, r->y1, 0.0f); GX_Color1u32(r->rgba); GX_TexCoord2f32(0.0f, 0.0f);
+    }
+    GX_End();
+    std3D_numUIRects = 0;
+    std3D_LoadSceneProjection();
+}

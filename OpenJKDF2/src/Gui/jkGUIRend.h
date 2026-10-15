@@ -86,6 +86,9 @@ void jkGuiRend_GcSetInitialFocus(jkGuiMenu *menu, jkGuiElement *element);
 void jkGuiRend_GcPaintWithBackground(jkGuiMenu *menu); // Added
 jkGuiMenu* jkGuiRend_GcActiveMenu(void);
 void jkGuiRend_GcSetNumeric(jkGuiElement *element, int min, int max, int step); // Added
+void jkGuiRend_GcSetNavDown(jkGuiElement *from, jkGuiElement *to); // Added
+void jkGuiRend_GcFocus(jkGuiMenu *pMenu, jkGuiElement *element);   // Added
+int  jkGuiRend_GcIsAPress(void);                                    // Added
 #endif
 
 extern int32_t jkGuiRend_thing_five;

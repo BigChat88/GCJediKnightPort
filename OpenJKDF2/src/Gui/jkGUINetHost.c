@@ -170,6 +170,8 @@ static jkGuiMenu jkGuiNetHost_menuGcAdv =
 
 int wstr_to_int_clamped(char16_t *pWstr, int minVal, int maxVal);
 
+static int jkGuiNetHost_GcLevelClick(jkGuiElement *pElement, jkGuiMenu *pMenu, int32_t mouseX, int32_t mouseY, int redraw);
+
 static void jkGuiNetHost_GcSetRect(jkGuiElement* e, int x, int y, int w, int h)
 {
     e->rect.x = x;
@@ -534,9 +536,13 @@ int jkGuiNetHost_Show(jkMultiEntry3 *pMultiEntry)
 
 #ifdef TARGET_GAMECUBE
     // Added: for the controller: the GameCube layout (see jkGuiNetHost_GcLayout);
-    // the cursor starts on the level list.
+    // the cursor starts on the game name; down goes to the episode list (the
+    // nearest element below would be the level list), A on a list picks it and
+    // moves on: episode -> level -> max rank.
     jkGuiNetHost_GcLayout();
-    jkGuiRend_GcSetInitialFocus(&jkGuiNetHost_menu, &jkGuiNetHost_aElements[NETHOST_LEVEL_LISTBOX]);
+    jkGuiRend_GcSetNavDown(&jkGuiNetHost_aElements[NETHOST_GAMENAME_TEXTBOX], &jkGuiNetHost_aElements[NETHOST_EPISODE_LISTBOX]);
+    jkGuiNetHost_aElements[NETHOST_LEVEL_LISTBOX].clickHandlerFunc = jkGuiNetHost_GcLevelClick;
+    jkGuiRend_GcSetInitialFocus(&jkGuiNetHost_menu, &jkGuiNetHost_aElements[NETHOST_GAMENAME_TEXTBOX]);
 #endif
 
     do
@@ -760,8 +766,26 @@ int jkGuiNetHost_sub_4119D0(jkGuiElement *pElement, jkGuiMenu *pMenu, int32_t mo
 
     if ( mouseX != -1 || mouseY != -1 )
         jkGuiRend_UpdateAndDrawClickable(&jkGuiNetHost_aElements[NETHOST_LEVEL_LISTBOX], &jkGuiNetHost_menu, 1);
+#ifdef TARGET_GAMECUBE
+    // Added: A on the episode list picks it and goes on to the level list.
+    if (jkGuiRend_GcIsAPress())
+        jkGuiRend_GcFocus(pMenu, &jkGuiNetHost_aElements[NETHOST_LEVEL_LISTBOX]);
+#endif
     return 0;
 }
+
+#ifdef TARGET_GAMECUBE
+// Added: A on the level list picks it and goes on to the row below (max rank),
+// instead of starting the game right away (that's OK's job now).
+static int jkGuiNetHost_GcLevelClick(jkGuiElement *pElement, jkGuiMenu *pMenu, int32_t mouseX, int32_t mouseY, int redraw)
+{
+    if (!jkGuiRend_GcIsAPress())
+        return jkGuiRend_ClickSound(pElement, pMenu, mouseX, mouseY, redraw);
+    jkGuiRend_PlayWav(pMenu->soundClick);
+    jkGuiRend_GcFocus(pMenu, &jkGuiNetHost_aElements[14]); // rank -
+    return 0;
+}
+#endif
 
 int jkGuiNetHost_sub_411AE0(jkGuiElement *pElement, jkGuiMenu *pMenu, int32_t mouseX, int32_t mouseY, int redraw)
 {
