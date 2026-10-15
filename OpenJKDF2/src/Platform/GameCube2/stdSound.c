@@ -1,14 +1,19 @@
-// stdSound backend for the Nintendo GameCube: libogc AESND (DSP mixer, 32 voices).
+// stdSound backend for the Nintendo GameCube, libogc2 core: libansnd.
 //
-// Selected by STDSOUND_GAMECUBE. The engine fills PCM buffers through
-// stdSound_BufferSetData/Unlock (sithSound swaps file PCM to big-endian on load);
-// each playing buffer gets an AESND voice, released when it stops. Positional
-// audio is done by the engine's 2D path (jkGuiSound_b3DSound = 0): it sets volume
-// and pan per buffer, which map straight onto the voice's left/right volume.
+// Selected by STDSOUND_GAMECUBE. libansnd mixes up to 48 voices on the DSP and,
+// on GameCube, plays them straight from ARAM -- PCM, or DSP-ADPCM decoded by the
+// DSP itself. So:
+//  - sounds from the sound bank (gcSndBank: already in ARAM since the level
+//    loaded) play as ADPCM from there: no decoding by the CPU, nothing in main
+//    RAM (the libogc core decodes each into a 1.5 MiB arena of main RAM first);
+//  - PCM the engine fills in (stdSound_BufferSetData/Unlock: WAVs outside the
+//    bank) is sent to ARAM the first time it plays, and its main RAM copy freed;
+//  - loops are libansnd's own (no click at the loop point);
+//  - cutscene audio, queued buffer after buffer (stdSound_BufferQueueAfterAnother),
+//    goes through a ring in main RAM to a gcStream voice.
 //
-// Cutscenes stream audio by queueing filled buffers one after another
-// (stdSound_BufferQueueAfterAnother); those are copied into a ring that a single
-// streaming voice drains in real time.
+// Positional audio is the engine's 2D path (jkGuiSound_b3DSound = 0): volume and
+// pan per buffer, mapped onto the voice's left/right volume.
 
 #include <unistd.h>
 #include "Win95/stdSound.h"
@@ -22,94 +27,100 @@
 #ifdef STDSOUND_GAMECUBE
 
 #include "gcOgc.h"
-#include "gcVoice.h"
-#include "gcAesndlib.h"
+#include "gcAram.h"
+#include "gcStream.h"
+#include <ansndlib.h>
 #include <ogc/lwp_watchdog.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
 
-#define GCSND_VOLUME_MAX 255
-
 // --- Refcounted samples --------------------------------------------------------
-// DirectSound semantics: duplicated buffers share the sample memory. The PCM
-// lives here and every buffer (original or duplicate) holds a reference.
+// DirectSound semantics: duplicated buffers share the sample. The engine writes
+// PCM into `mem` (main RAM); it moves to ARAM when first played. ADPCM samples
+// point at the sound bank's block in ARAM (not ours to free).
+enum { GCSND_PCM, GCSND_ADPCM };
+
 typedef struct gcSample {
-    int   refs;
-    void* data;      // 32-byte aligned, flushed to RAM for the DSP
-    int   bytes;
+    int      refs;
+    int      kind;
+    int      channels;
+    int      bits;        // PCM: 8 or 16
+    uint8_t* mem;         // PCM in main RAM until sent to ARAM (32-byte aligned)
+    int      bytes;       // PCM bytes
+    uint32_t aram;        // PCM: our ARAM copy (0 = not yet); ADPCM: the bank's data
+    uint32_t aramBytes;
+    // ADPCM
+    uint32_t numSamples;  // per channel
+    uint32_t chBytes;     // ADPCM bytes per channel
+    u16      coefs[2][16];
+    u16      ps[2];       // predictor/scale of each channel's first frame
 } gcSample;
 
 static int stdSound_bReady = 0;
 
-void* gcHeap_SndAlloc(size_t n); // the sound arena (gcHeap.c)
-void gcHeap_SndFree(void* p);
-
-static gcSample* gcSample_New(int bytes)
+static gcSample* gcSample_NewPcm(int bytes, int channels, int bits)
 {
-    gcSample* s = (gcSample*)malloc(sizeof(gcSample));
+    gcSample* s = (gcSample*)calloc(1, sizeof(gcSample));
     if (!s) return NULL;
     s->refs = 1;
+    s->kind = GCSND_PCM;
+    s->channels = channels;
+    s->bits = bits;
     s->bytes = bytes;
-    s->data = gcHeap_SndAlloc((bytes + 31) & ~31);
-    if (!s->data) { free(s); return NULL; }
-    memset(s->data, 0, bytes);
+    s->mem = (uint8_t*)memalign(32, (bytes + 31) & ~31);
+    if (!s->mem) { free(s); return NULL; }
+    memset(s->mem, 0, (bytes + 31) & ~31);
     return s;
 }
 
 static void gcSample_Unref(gcSample* s)
 {
     if (!s || --s->refs > 0) return;
-    gcHeap_SndFree(s->data);
+    if (s->kind == GCSND_PCM && s->aram) gcAram_Free(s->aram, s->aramBytes);
+    free(s->mem);
     free(s);
 }
 
-static u32 stdSound_VoiceFormat(const stdSound_buffer_t* buf)
+// PCM to ARAM (main thread, when first played). libansnd takes signed 8-bit
+// PCM: WAV's unsigned bytes are flipped on the way.
+static int gcSample_ToAram(gcSample* s)
 {
-    if (buf->bitsPerSample == 16)
-        return buf->bStereo ? VOICE_STEREO16 : VOICE_MONO16;
-    // 8-bit WAV PCM is unsigned
-    return buf->bStereo ? VOICE_STEREO8_UNSIGNED : VOICE_MONO8_UNSIGNED;
-}
-
-static void stdSound_ApplyVolume(stdSound_buffer_t* buf)
-{
-    if (!buf->pVoice) return;
-    flex_t vol = stdMath_Clamp(buf->vol, 0.0, 1.0) * GCSND_VOLUME_MAX;
-    flex_t pan = stdMath_Clamp(buf->pan, -1.0, 1.0);
-    flex_t l = vol * (pan > 0.0 ? 1.0 - pan : 1.0);
-    flex_t r = vol * (pan < 0.0 ? 1.0 + pan : 1.0);
-    AESND_SetVoiceVolume((AESNDPB*)buf->pVoice, (u16)l, (u16)r);
+    if (s->kind != GCSND_PCM || s->aram) return 1;
+    if (!s->mem || s->bytes <= 0) return 0;
+    uint32_t len = (s->bytes + 31) & ~31u;
+    uint32_t aram = gcAram_Alloc(len);
+    if (!aram) return 0;
+    if (s->bits == 8)
+        for (int i = 0; i < s->bytes; i++) s->mem[i] ^= 0x80;
+    gcAram_Write(aram, s->mem, len);
+    s->aram = aram;
+    s->aramBytes = len;
+    free(s->mem);
+    s->mem = NULL;
+    return 1;
 }
 
 // --- Voice slots -----------------------------------------------------------------
-// Each playing buffer owns a slot. The voice callback gets a token (slot index +
-// generation) instead of a pointer: AESND can call a voice's callback after the
-// voice was freed (see gcVoice.c), and by then the buffer may be gone. A stale
-// token just stops the voice. The slot keeps what the DSP reads from (the sample,
-// the loop chunks) until gcVoice reports the voice gone.
-//
-// Looping voices: AESND's own looping (AESND_PlayVoice(..., looped)) zero-pads the
-// last DSP_STREAMBUFFER_SIZE piece of the sample before jumping back to its start,
-// so every loop gets up to ~26 ms of silence: an audible click in ambient loops.
-// Loops are streamed instead, in chunks that are a multiple of that piece, taken
-// circularly from the sample.
-#define GCSND_LOOP_CHUNK (4 * DSP_STREAMBUFFER_SIZE)
-#define GCSND_MAX_SLOTS  64
-#define GCSND_GEN_MASK   0xFFFFFF
+// Each playing buffer owns a slot with its voice(s) -- two linked ones for stereo
+// ADPCM, one per channel. The voice callback (DSP interrupt) gets a token (slot
+// index + generation), not a pointer: a stale token after the buffer is gone is
+// ignored. A released slot keeps its sample for a moment, until the DSP is surely
+// done reading it.
+#define GCSND_MAX_SLOTS   48
+#define GCSND_GEN_MASK    0xFFFFFF
+#define GCSND_RELEASE_MS  30
 
 enum { GCSND_SLOT_FREE, GCSND_SLOT_ACTIVE, GCSND_SLOT_RELEASING };
 
 typedef struct gcSndSlot {
     volatile int       state;
-    volatile int       bGone;      // set once the released voice is really freed
     volatile uint32_t  gen;
     stdSound_buffer_t* volatile buf;
-    AESNDPB*           pb;
-    gcSample*          pSample;    // reference held while the DSP may read it
-    uint8_t*           aChunks[2]; // looping voices
-    int                cur;
-    uint32_t           pos;
+    s32                aVoice[2];
+    int                numVoices;
+    gcSample*          pSample;
+    u64                releasedAt;
 } gcSndSlot;
 
 static gcSndSlot stdSound_aSlots[GCSND_MAX_SLOTS];
@@ -119,117 +130,71 @@ static void* stdSound_SlotToken(gcSndSlot* s)
     return (void*)(uintptr_t)((s->gen << 8) | (uint32_t)(s - stdSound_aSlots));
 }
 
-// Interrupt context: the slot behind a callback token, or NULL if it is stale.
-static gcSndSlot* stdSound_SlotFromToken(void* arg)
+static void stdSound_VoiceCallback(void* user, s32 state)
 {
-    uint32_t t = (uint32_t)(uintptr_t)arg;
+    uint32_t t = (uint32_t)(uintptr_t)user;
     gcSndSlot* s = &stdSound_aSlots[(t & 0xFF) % GCSND_MAX_SLOTS];
-    return (s->state == GCSND_SLOT_ACTIVE && s->gen == (t >> 8)) ? s : NULL;
+    if (s->state != GCSND_SLOT_ACTIVE || s->gen != (t >> 8)) return;
+    if (state == ANSND_VOICE_STATE_FINISHED || state == ANSND_VOICE_STATE_ERROR) {
+        stdSound_buffer_t* buf = s->buf;
+        if (buf) buf->bPlaying = 0;
+    }
 }
 
-// Give back the resources of slots whose voices are gone.
-static void stdSound_SlotCollect(void)
+// Give back the samples of slots released long enough ago.
+static void stdSound_SlotCollect(int bForce)
 {
+    u64 now = gettime();
     for (int i = 0; i < GCSND_MAX_SLOTS; i++) {
         gcSndSlot* s = &stdSound_aSlots[i];
-        if (s->state != GCSND_SLOT_RELEASING || !s->bGone) continue;
+        if (s->state != GCSND_SLOT_RELEASING) continue;
+        if (!bForce && diff_msec(s->releasedAt, now) < GCSND_RELEASE_MS) continue;
         gcSample_Unref(s->pSample);
-        free(s->aChunks[0]);
-        free(s->aChunks[1]);
         s->pSample = NULL;
-        s->aChunks[0] = s->aChunks[1] = NULL;
-        s->pb = NULL;
         s->state = GCSND_SLOT_FREE;
     }
 }
 
-// Added: give back now the samples of voices that have been released. A released
-// sound's PCM stays referenced by its voice slot until the audio callback has
-// really freed the voice and the slot is collected (normally only when a new
-// sound starts), so freeing idle sounds to make room didn't return the memory
-// in time for the allocation that needed it (level loads failing with megabytes
-// free a moment later). Waits up to ~40 ms for the voices to go.
-void stdSound_GcReclaimWait(int maxTries);
-void stdSound_GcReclaim(void) { stdSound_GcReclaimWait(8); }
-
+// Engine hooks (sithSound): give back released sounds' memory now.
 void stdSound_GcReclaimWait(int maxTries)
 {
-    for (int tries = 0; tries < maxTries; tries++) {
-        stdSound_SlotCollect();
-        int bPending = 0;
-        for (int i = 0; i < GCSND_MAX_SLOTS; i++)
-            if (stdSound_aSlots[i].state == GCSND_SLOT_RELEASING) bPending = 1;
-        if (!bPending) return;
-        usleep(5000);
-    }
+    (void)maxTries;
+    usleep(GCSND_RELEASE_MS * 1000);
+    stdSound_SlotCollect(1);
 }
+void stdSound_GcReclaim(void) { stdSound_SlotCollect(0); }
 
 static gcSndSlot* stdSound_SlotAlloc(stdSound_buffer_t* buf, gcSample* sample)
 {
-    stdSound_SlotCollect();
+    stdSound_SlotCollect(0);
     for (int i = 0; i < GCSND_MAX_SLOTS; i++) {
         gcSndSlot* s = &stdSound_aSlots[i];
         if (s->state != GCSND_SLOT_FREE) continue;
         s->gen = (s->gen + 1) & GCSND_GEN_MASK;
-        s->bGone = 0;
         s->buf = buf;
-        s->pb = NULL;
+        s->numVoices = 0;
         s->pSample = sample;
         sample->refs++;
-        s->cur = 0;
-        s->pos = 0;
         s->state = GCSND_SLOT_ACTIVE;
         return s;
     }
     return NULL;
 }
 
-// Detach the slot from its buffer and let its voice go.
+// Stop the slot's voices and keep its sample for GCSND_RELEASE_MS.
 static void stdSound_SlotRelease(gcSndSlot* s)
 {
-    u32 level;
-    level = IRQ_Disable();
+    u32 level = IRQ_Disable();
     s->buf = NULL;
     s->gen = (s->gen + 1) & GCSND_GEN_MASK; // outstanding tokens go stale
-    s->bGone = 0;
     s->state = GCSND_SLOT_RELEASING;
     IRQ_Restore(level);
-    gcVoice_Free(s->pb, &s->bGone);
-}
-
-static void gcLoop_Feed(AESNDPB* pb, gcSndSlot* l)
-{
-    uint8_t* chunk = l->aChunks[l->cur];
-    l->cur ^= 1;
-    uint32_t total = (uint32_t)l->pSample->bytes & ~3u;
-    const uint8_t* src = (const uint8_t*)l->pSample->data;
-    for (uint32_t done = 0; done < GCSND_LOOP_CHUNK; ) {
-        uint32_t n = total - l->pos;
-        if (n > GCSND_LOOP_CHUNK - done) n = GCSND_LOOP_CHUNK - done;
-        memcpy(chunk + done, src + l->pos, n);
-        done += n;
-        l->pos += n;
-        if (l->pos >= total) l->pos = 0;
+    for (int v = 0; v < s->numVoices; v++) {
+        ansnd_stop_voice(s->aVoice[v]);
+        ansnd_deallocate_voice(s->aVoice[v]);
     }
-    DCFlushRange(chunk, GCSND_LOOP_CHUNK);
-    AESND_SetVoiceBuffer(pb, chunk, GCSND_LOOP_CHUNK);
-}
-
-// Voice callback (DSP interrupt context; pb may be AESND's working copy).
-static void stdSound_VoiceCallback(AESNDPB* pb, u32 state, void* arg)
-{
-    gcSndSlot* s = stdSound_SlotFromToken(arg);
-    if (!s) {
-        if (state != VOICE_STATE_STOPPED) AESND_SetVoiceStop(pb, true);
-        return;
-    }
-    if (state == VOICE_STATE_STOPPED) {
-        stdSound_buffer_t* buf = s->buf;
-        if (buf) buf->bPlaying = 0;
-    }
-    else if (state == VOICE_STATE_STREAM && s->aChunks[0]) {
-        gcLoop_Feed(pb, s);
-    }
+    s->numVoices = 0;
+    s->releasedAt = gettime();
 }
 
 static void stdSound_ReleaseVoice(stdSound_buffer_t* buf)
@@ -241,20 +206,40 @@ static void stdSound_ReleaseVoice(stdSound_buffer_t* buf)
     if (s) stdSound_SlotRelease(s);
 }
 
+static void stdSound_ApplyVolume(stdSound_buffer_t* buf)
+{
+    gcSndSlot* s = (gcSndSlot*)buf->pSlot;
+    if (!s || !s->numVoices) return;
+    float vol = (float)stdMath_Clamp(buf->vol, 0.0, 1.0);
+    float pan = (float)stdMath_Clamp(buf->pan, -1.0, 1.0);
+    float l = vol * (pan > 0.0f ? 1.0f - pan : 1.0f);
+    float r = vol * (pan < 0.0f ? 1.0f + pan : 1.0f);
+    if (s->numVoices == 2) { // stereo ADPCM: one voice per channel
+        ansnd_set_voice_volume(s->aVoice[0], l, 0.0f);
+        ansnd_set_voice_volume(s->aVoice[1], 0.0f, r);
+    }
+    else
+        ansnd_set_voice_volume(s->aVoice[0], l, r);
+}
+
+static void stdSound_ApplyPitch(stdSound_buffer_t* buf)
+{
+    gcSndSlot* s = (gcSndSlot*)buf->pSlot;
+    if (!s || !buf->freqHz || !buf->nSamplesPerSec) return;
+    float pitch = (float)buf->freqHz / (float)buf->nSamplesPerSec;
+    for (int v = 0; v < s->numVoices; v++)
+        ansnd_set_voice_pitch(s->aVoice[v], pitch);
+}
+
 // --- Cutscene stream -------------------------------------------------------------
 
 #define GCSND_STREAM_RING   (256 * 1024)
-// AESND (GameCube) copies voice data to ARAM in DSP_STREAMBUFFER_SIZE pieces and
-// zero-pads the last piece of every buffer it is given: a stream chunk that isn't a
-// multiple of it gets a burst of silence after every chunk (choppy, slow audio).
-#define GCSND_STREAM_CHUNK  (4 * DSP_STREAMBUFFER_SIZE)
+#define GCSND_STREAM_CHUNK  (8 * 1024)
 
 static uint8_t*          stdSound_pRing = NULL;
 static volatile uint32_t stdSound_ringW = 0;   // absolute bytes written (engine)
-static volatile uint32_t stdSound_ringR = 0;   // absolute bytes consumed (DSP callback)
-static uint8_t*          stdSound_aChunks[2] = { NULL, NULL };
-static int               stdSound_curChunk = 0;
-static AESNDPB*          stdSound_pStreamVoice = NULL;
+static volatile uint32_t stdSound_ringR = 0;   // absolute bytes consumed (DSP interrupt)
+static gcStream          stdSound_stream;
 static stdSound_buffer_t* stdSound_pStreamOwner = NULL;
 // The cutscene video is paced by the wall clock, so the stream must be too: silence
 // played while the ring was starved (main thread stalled on the disc) is owed back
@@ -262,20 +247,12 @@ static stdSound_buffer_t* stdSound_pStreamOwner = NULL;
 // audio behind the picture.
 static volatile uint32_t stdSound_silenceDebt = 0;
 static volatile uint32_t stdSound_silenceTotal = 0;
-
-// Playback clock of the stream (see stdSound_GetStreamClockUs): chunks handed to
-// the DSP so far, when the latest was requested, and the wall time at the start.
-static volatile uint32_t stdSound_chunksFed = 0;
-static volatile u64      stdSound_lastFeedTicks = 0;
 static uint64_t          stdSound_streamStartUs = 0;
 static uint32_t          stdSound_streamBytesPerSec = 0;
 
-// Copy the next chunk out of the ring (silence on underrun) and hand it to the DSP.
-static void stdSound_StreamFeed(AESNDPB* pb)
+// Stream fill (DSP interrupt): the next chunk out of the ring, silence on underrun.
+static void stdSound_StreamFill(void* ctx, uint8_t* chunk, uint32_t len)
 {
-    uint8_t* chunk = stdSound_aChunks[stdSound_curChunk];
-    stdSound_curChunk ^= 1;
-
     uint32_t avail = stdSound_ringW - stdSound_ringR;
     if (stdSound_silenceDebt && avail) {
         uint32_t skip = (stdSound_silenceDebt < avail ? stdSound_silenceDebt : avail) & ~3u;
@@ -283,23 +260,21 @@ static void stdSound_StreamFeed(AESNDPB* pb)
         stdSound_silenceDebt -= skip;
         avail -= skip;
     }
-    uint32_t give = avail < GCSND_STREAM_CHUNK ? avail : GCSND_STREAM_CHUNK;
+    uint32_t give = avail < len ? avail : len;
     give &= ~3u; // whole stereo 16-bit frames
     uint32_t r = stdSound_ringR % GCSND_STREAM_RING;
     uint32_t first = give < GCSND_STREAM_RING - r ? give : GCSND_STREAM_RING - r;
     if (first) memcpy(chunk, stdSound_pRing + r, first);
     if (give > first) memcpy(chunk + first, stdSound_pRing, give - first);
-    if (give < GCSND_STREAM_CHUNK) {
-        memset(chunk + give, 0, GCSND_STREAM_CHUNK - give);
-        stdSound_silenceDebt += GCSND_STREAM_CHUNK - give;
-        stdSound_silenceTotal += GCSND_STREAM_CHUNK - give;
+    if (give < len) {
+        memset(chunk + give, 0, len - give);
+        // (Not owed for the two chunks primed before the voice starts.)
+        if (stdSound_stream.chunksFed > 1) {
+            stdSound_silenceDebt += len - give;
+            stdSound_silenceTotal += len - give;
+        }
     }
     stdSound_ringR += give;
-
-    DCFlushRange(chunk, GCSND_STREAM_CHUNK);
-    AESND_SetVoiceBuffer(pb, chunk, GCSND_STREAM_CHUNK);
-    stdSound_chunksFed++;
-    stdSound_lastFeedTicks = gettime();
 }
 
 // Cutscene clock driven by the DSP's actual consumption of the stream, in the same
@@ -307,10 +282,10 @@ static void stdSound_StreamFeed(AESNDPB* pb)
 // and picture stay locked even if the DSP runs a little fast or slow.
 int stdSound_GetStreamClockUs(uint64_t* pUs)
 {
-    if (!stdSound_pStreamVoice || !stdSound_streamBytesPerSec || !stdSound_chunksFed)
+    if (!gcStream_IsPlaying(&stdSound_stream) || !stdSound_streamBytesPerSec)
         return 0;
-    uint32_t fed = stdSound_chunksFed;
-    u64 last = stdSound_lastFeedTicks;
+    uint32_t fed = stdSound_stream.chunksFed;
+    u64 last = stdSound_stream.lastFeedTicks;
     uint64_t chunkUs = (uint64_t)GCSND_STREAM_CHUNK * 1000000 / stdSound_streamBytesPerSec;
     // The chunk handed over at the latest request is queued behind the one playing.
     uint64_t since = ticks_to_microsecs(diff_ticks(last, gettime()));
@@ -319,82 +294,111 @@ int stdSound_GetStreamClockUs(uint64_t* pUs)
     return 1;
 }
 
-// Bumped when the stream voice is released; its callback ignores (and stops) a
-// voice from an older generation (see gcVoice.c).
-static volatile uint32_t stdSound_streamGen = 1;
-
-static void stdSound_StreamCallback(AESNDPB* pb, u32 state, void* arg)
-{
-    if ((uint32_t)(uintptr_t)arg != stdSound_streamGen || !stdSound_pStreamVoice) {
-        if (state != VOICE_STATE_STOPPED) AESND_SetVoiceStop(pb, true);
-        return;
-    }
-    if (state == VOICE_STATE_STREAM)
-        stdSound_StreamFeed(pb);
-}
-
 static void stdSound_StreamStop(void)
 {
-    if (stdSound_pStreamVoice) {
-        u32 level;
-        level = IRQ_Disable();
-        AESNDPB* pb = stdSound_pStreamVoice;
-        stdSound_pStreamVoice = NULL;
-        stdSound_streamGen++;
-        IRQ_Restore(level);
-        gcVoice_Free(pb, NULL);
-    }
+    gcStream_Stop(&stdSound_stream);
     if (stdSound_silenceTotal)
         stdPlatform_Printf("stdSound: cutscene stream starved for %u bytes\n", stdSound_silenceTotal);
     stdSound_pStreamOwner = NULL;
-    // The 256 KiB ring is only needed while a cutscene plays (the stale-token check
-    // above keeps the old voice's callback off it). The small DSP chunks stay.
+    // The ring is only needed while a cutscene plays.
     free(stdSound_pRing);
     stdSound_pRing = NULL;
     stdSound_ringW = stdSound_ringR = 0;
     stdSound_silenceDebt = stdSound_silenceTotal = 0;
-    stdSound_chunksFed = 0;
     stdSound_streamBytesPerSec = 0;
 }
 
-// Append a cutscene chunk to the stream, starting the voice on the first one.
+// Append a cutscene chunk to the stream (as 16-bit), starting it on the first one.
 static void stdSound_StreamQueue(stdSound_buffer_t* owner, stdSound_buffer_t* chunk)
 {
     gcSample* s = (gcSample*)chunk->pSample;
-    if (!s || !s->bytes) return;
-
+    if (!s || !s->mem || !s->bytes) return;
     if (!stdSound_pRing) {
         stdSound_pRing = (uint8_t*)malloc(GCSND_STREAM_RING);
-        if (!stdSound_aChunks[0]) stdSound_aChunks[0] = (uint8_t*)memalign(32, GCSND_STREAM_CHUNK);
-        if (!stdSound_aChunks[1]) stdSound_aChunks[1] = (uint8_t*)memalign(32, GCSND_STREAM_CHUNK);
-        if (!stdSound_pRing || !stdSound_aChunks[0] || !stdSound_aChunks[1]) return;
+        if (!stdSound_pRing) return;
     }
 
+    // 8-bit (unsigned) chunks are widened to 16-bit big-endian.
+    int wide = s->bits == 8;
+    uint32_t len = (uint32_t)s->bytes * (wide ? 2 : 1);
     // Drop the chunk if the ring is full (the cutscene runs ahead of the audio).
-    uint32_t len = (uint32_t)s->bytes;
     if (stdSound_ringW - stdSound_ringR + len > GCSND_STREAM_RING) return;
     uint32_t w = stdSound_ringW % GCSND_STREAM_RING;
-    uint32_t first = len < GCSND_STREAM_RING - w ? len : GCSND_STREAM_RING - w;
-    memcpy(stdSound_pRing + w, s->data, first);
-    if (len > first) memcpy(stdSound_pRing, (uint8_t*)s->data + first, len - first);
+    if (wide) {
+        for (int i = 0; i < s->bytes; i++) {
+            stdSound_pRing[(w + i * 2) % GCSND_STREAM_RING] = s->mem[i] ^ 0x80;
+            stdSound_pRing[(w + i * 2 + 1) % GCSND_STREAM_RING] = 0;
+        }
+    }
+    else {
+        uint32_t first = len < GCSND_STREAM_RING - w ? len : GCSND_STREAM_RING - w;
+        memcpy(stdSound_pRing + w, s->mem, first);
+        if (len > first) memcpy(stdSound_pRing, s->mem + first, len - first);
+    }
     stdSound_ringW += len;
 
-    if (!stdSound_pStreamVoice) {
-        stdSound_pStreamVoice = AESND_AllocateVoiceWithArg(stdSound_StreamCallback,
-                                                           (void*)(uintptr_t)stdSound_streamGen);
-        if (!stdSound_pStreamVoice) return;
+    if (!gcStream_IsPlaying(&stdSound_stream)) {
         stdSound_pStreamOwner = owner;
-        stdSound_chunksFed = 0;
         stdSound_streamStartUs = Linux_TimeUs();
-        stdSound_streamBytesPerSec = chunk->nSamplesPerSec * (chunk->bStereo ? 2 : 1) * (chunk->bitsPerSample / 8);
-        AESND_SetVoiceFormat(stdSound_pStreamVoice, stdSound_VoiceFormat(chunk));
-        AESND_SetVoiceFrequency(stdSound_pStreamVoice, (f32)chunk->nSamplesPerSec);
-        u16 vol = (u16)(stdMath_Clamp(owner->vol, 0.0, 1.0) * GCSND_VOLUME_MAX);
-        AESND_SetVoiceVolume(stdSound_pStreamVoice, vol, vol);
-        AESND_SetVoiceStream(stdSound_pStreamVoice, true);
-        stdSound_StreamFeed(stdSound_pStreamVoice);
-        AESND_SetVoiceStop(stdSound_pStreamVoice, false);
+        stdSound_streamBytesPerSec = chunk->nSamplesPerSec * (chunk->bStereo ? 2 : 1) * 2;
+        float vol = (float)stdMath_Clamp(owner->vol, 0.0, 1.0);
+        gcStream_Start(&stdSound_stream, chunk->nSamplesPerSec, chunk->bStereo, vol,
+                       GCSND_STREAM_CHUNK, stdSound_StreamFill, NULL);
     }
+}
+
+// --- Playing a sample ------------------------------------------------------------
+
+static int stdSound_StartPcm(stdSound_buffer_t* buf, gcSndSlot* slot, gcSample* s, int loop)
+{
+    s32 v = ansnd_allocate_voice();
+    if (v < 0) return 0;
+    slot->aVoice[0] = v;
+    slot->numVoices = 1;
+    int frameBytes = s->channels * (s->bits / 8);
+    uint32_t frames = (uint32_t)s->bytes / frameBytes;
+    ansnd_pcm_voice_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.samplerate = buf->nSamplesPerSec;
+    cfg.format = s->bits == 8 ? ANSND_VOICE_PCM_FORMAT_SIGNED_8_PCM : ANSND_VOICE_PCM_FORMAT_SIGNED_16_PCM;
+    cfg.channels = s->channels;
+    cfg.pitch = 1.0f;
+    cfg.frame_data_ptr = s->aram;
+    cfg.frame_count = frames;
+    if (loop && frames > 1) cfg.loop_end_offset = frames - 1;
+    cfg.voice_callback = stdSound_VoiceCallback;
+    cfg.user_pointer = stdSound_SlotToken(slot);
+    return ansnd_configure_pcm_voice(v, &cfg) >= 0;
+}
+
+static int stdSound_StartAdpcm(stdSound_buffer_t* buf, gcSndSlot* slot, gcSample* s, int loop)
+{
+    for (int c = 0; c < s->channels; c++) {
+        s32 v = ansnd_allocate_voice();
+        if (v < 0) return 0;
+        slot->aVoice[c] = v;
+        slot->numVoices = c + 1;
+        ansnd_adpcm_voice_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.samplerate = buf->nSamplesPerSec;
+        cfg.pitch = 1.0f;
+        cfg.data_ptr = s->aram + c * s->chBytes;
+        cfg.sample_count = s->numSamples;
+        memcpy(cfg.decode_coefficients, s->coefs[c], sizeof(cfg.decode_coefficients));
+        cfg.initial_predictor_scale = s->ps[c];
+        if (loop && s->numSamples > 1) {
+            cfg.loop_flag = 1;
+            cfg.loop_predictor_scale = s->ps[c];
+            cfg.loop_start_offset = 0;
+            cfg.loop_end_offset = s->numSamples - 1;
+        }
+        cfg.voice_callback = stdSound_VoiceCallback;
+        cfg.user_pointer = stdSound_SlotToken(slot);
+        if (ansnd_configure_adpcm_voice(v, &cfg) < 0) return 0;
+    }
+    // Both channels start on the same DSP frame.
+    if (slot->numVoices == 2) ansnd_link_voices(slot->aVoice[0], slot->aVoice[1]);
+    return 1;
 }
 
 // --- stdSound API ----------------------------------------------------------------
@@ -403,12 +407,10 @@ int stdSound_Startup()
 {
     // The engine's 2D mixer drives volume/pan; there is no 3D audio hardware path.
     jkGuiSound_b3DSound = 0;
-
     if (!stdSound_bReady) {
-        // AESND_Init() already ran in gcSystem_Init (it must precede the ARAM setup).
-        AESND_Pause(false);
+        // ansnd_initialize already ran in gcSystem_Init (before the ARAM setup).
         stdSound_bReady = 1;
-        stdPlatform_Printf("stdSound: AESND ready\n");
+        stdPlatform_Printf("stdSound: libansnd ready\n");
     }
     return 1;
 }
@@ -446,17 +448,17 @@ void* stdSound_BufferSetData(stdSound_buffer_t* sound, int bufferBytes, int32_t*
     sound->pSample = NULL;
     sound->data = NULL;
 
-    gcSample* s = gcSample_New(bufferBytes);
+    gcSample* s = gcSample_NewPcm(bufferBytes, sound->bStereo ? 2 : 1, sound->bitsPerSample == 8 ? 8 : 16);
     if (!s) {
         if (bufferMaxSize) *bufferMaxSize = 0;
         return NULL;
     }
     sound->pSample = s;
-    sound->data = s->data;
+    sound->data = s->mem;
     sound->bufferBytes = bufferBytes;
     if (bufferMaxSize)
         *bufferMaxSize = bufferBytes;
-    return s->data;
+    return s->mem;
 }
 
 int stdSound_BufferUnlock(stdSound_buffer_t* sound, void* buffer, int bufferRead)
@@ -464,9 +466,38 @@ int stdSound_BufferUnlock(stdSound_buffer_t* sound, void* buffer, int bufferRead
     gcSample* s = (gcSample*)sound->pSample;
     // A short read trims the sample; 0 means "the whole buffer" (the cutscene
     // player always passes 0).
-    if (s && bufferRead > 0 && bufferRead <= s->bytes)
+    if (s && s->kind == GCSND_PCM && bufferRead > 0 && bufferRead <= s->bytes)
         s->bytes = bufferRead;
-    if (s) DCFlushRange(s->data, (s->bytes + 31) & ~31);
+    return 1;
+}
+
+// Added (libogc2 core, called by sithSound): the buffer plays a sound of the bank
+// straight from its ARAM block (gcSndBank_LoadToAram: 64 bytes of coefficients,
+// then each channel's ADPCM).
+int stdSound_GcBufferSetAdpcm(stdSound_buffer_t* sound, uint32_t aram, int channels, uint32_t numSamples)
+{
+    stdSound_ReleaseVoice(sound);
+    gcSample_Unref((gcSample*)sound->pSample);
+    sound->pSample = NULL;
+    sound->data = NULL;
+    if (channels < 1 || channels > 2 || !numSamples) return 0;
+
+    gcSample* s = (gcSample*)calloc(1, sizeof(gcSample));
+    if (!s) return 0;
+    s->refs = 1;
+    s->kind = GCSND_ADPCM;
+    s->channels = channels;
+    s->numSamples = numSamples;
+    s->chBytes = (((numSamples + 13) / 14) * 8 + 31) & ~31u;
+    s->aram = aram + 64;
+    static u8 head[64] __attribute__((aligned(32)));
+    gcAram_Read(head, aram, 64);
+    memcpy(s->coefs, head, sizeof(s->coefs));
+    for (int c = 0; c < channels; c++) {
+        gcAram_Read(head, s->aram + c * s->chBytes, 32);
+        s->ps[c] = head[0];
+    }
+    sound->pSample = s;
     return 1;
 }
 
@@ -474,47 +505,28 @@ int stdSound_BufferPlay(stdSound_buffer_t* buf, int loop)
 {
     if (!stdSound_bReady || !buf) return 0;
     gcSample* s = (gcSample*)buf->pSample;
-    if (!s || !s->bytes) return 0;
+    if (!s || (s->kind == GCSND_PCM && !s->bytes)) return 0;
+    if (!gcSample_ToAram(s)) return 0; // no room in ARAM
 
     stdSound_ReleaseVoice(buf);
-    f32 freq = (f32)(buf->freqHz ? buf->freqHz : buf->nSamplesPerSec);
-
     gcSndSlot* slot = stdSound_SlotAlloc(buf, s);
     if (!slot) return 0;
-    int bStream = loop && (s->bytes & ~3) > 0;
-    if (bStream) {
-        slot->aChunks[0] = (uint8_t*)memalign(32, GCSND_LOOP_CHUNK);
-        slot->aChunks[1] = (uint8_t*)memalign(32, GCSND_LOOP_CHUNK);
+    buf->pSlot = slot;
+    int ok = s->kind == GCSND_ADPCM ? stdSound_StartAdpcm(buf, slot, s, loop)
+                                    : stdSound_StartPcm(buf, slot, s, loop);
+    if (ok) {
+        buf->pVoice = slot;
+        buf->bLooping = loop;
+        buf->bPlaying = 1;
+        stdSound_ApplyVolume(buf);
+        stdSound_ApplyPitch(buf);
+        ok = ansnd_start_voice(slot->aVoice[0]) >= 0;
+        if (ok && slot->numVoices == 2) ansnd_start_voice(slot->aVoice[1]);
     }
-    AESNDPB* pb = (!bStream || (slot->aChunks[0] && slot->aChunks[1]))
-                ? AESND_AllocateVoiceWithArg(stdSound_VoiceCallback, stdSound_SlotToken(slot)) : NULL;
-    slot->pb = pb;
-    if (!pb) {
-        stdSound_SlotRelease(slot); // no voice: gcVoice marks it gone right away
+    if (!ok) {
+        stdSound_ReleaseVoice(buf);
         return 0;
     }
-    buf->pSlot = slot;
-    buf->pVoice = pb;
-
-    // A new voice starts stopped, and AESND never mixes stopped voices, so it can
-    // be set up safely before it is started.
-    if (bStream)
-    {
-        buf->bLooping = 1;
-        buf->bPlaying = 1;
-        AESND_SetVoiceFormat(pb, stdSound_VoiceFormat(buf));
-        AESND_SetVoiceFrequency(pb, freq);
-        stdSound_ApplyVolume(buf);
-        AESND_SetVoiceStream(pb, true);
-        gcLoop_Feed(pb, slot);
-        AESND_SetVoiceStop(pb, false);
-        return 1;
-    }
-
-    buf->bLooping = loop;
-    buf->bPlaying = 1;
-    stdSound_ApplyVolume(buf);
-    AESND_PlayVoice(pb, stdSound_VoiceFormat(buf), s->data, (u32)s->bytes & ~3u, freq, 0, loop ? true : false);
     return 1;
 }
 
@@ -556,8 +568,7 @@ void stdSound_BufferSetFrequency(stdSound_buffer_t* sound, int freq)
 {
     if (!sound) return;
     sound->freqHz = freq;
-    if (sound->pVoice)
-        AESND_SetVoiceFrequency((AESNDPB*)sound->pVoice, (f32)freq);
+    stdSound_ApplyPitch(sound);
 }
 
 stdSound_buffer_t* stdSound_BufferDuplicate(stdSound_buffer_t* sound)
@@ -597,9 +608,7 @@ int stdSound_BufferStop(stdSound_buffer_t* buf)
 void stdSound_BufferSetVolume(stdSound_buffer_t* sound, flex_t vol)
 {
     if (!sound) return;
-    // The SFX volume setting scales every volume the mixer sets, as in the other
-    // ports (it was only applied when a buffer was created, so the mixer's own
-    // volumes -- distance, every sound -- overrode it and the slider did nothing).
+    // The SFX volume setting scales every volume the mixer sets.
     sound->vol = vol * stdSound_fMenuVolume;
     stdSound_ApplyVolume(sound);
 }
@@ -637,7 +646,7 @@ int stdSound_IsPlaying(stdSound_buffer_t* sound, rdVector3 *pos)
     if (!sound) return 0;
     if (pos) *pos = sound->pos;
     if (sound->pVoice && !sound->bPlaying)
-        stdSound_ReleaseVoice(sound); // finished one-shot: give the voice back
+        stdSound_ReleaseVoice(sound); // finished one-shot: give the voices back
     return sound->bPlaying;
 }
 

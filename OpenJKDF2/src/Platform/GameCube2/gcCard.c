@@ -37,7 +37,6 @@
 #include <gccore.h>
 #include <ogc/lwp_watchdog.h>
 #include <zlib.h>
-#include "gcAesndlib.h"
 #include <malloc.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -821,13 +820,13 @@ int gcCard_Save(void)
         return 0;
     }
     // On real hardware card writes timed out (the card's "erase done" interrupt
-    // never came in time) while the game ran: keep the SD card reads and the DSP
-    // mixer (thousands of interrupts a second) quiet while writing.
+    // never came in time) while the game ran: keep the SD card reads quiet while
+    // writing. (The libogc core also paused its AESND mixer; libansnd has no
+    // global pause, and libogc2's card driver is meant to cope -- to be confirmed
+    // on hardware.)
     gcDvd_PauseReads();
-    AESND_Pause(true);
     int ok = gcCard_SaveSettings();
     ok = gcCard_SyncSlots() && ok;
-    AESND_Pause(false);
     gcDvd_ResumeReads();
     if (gcCard_bNoticeShown) {
         gcNotice_Hide();

@@ -5,8 +5,8 @@
 // (GOG numbering: track12..18 = CD 1, track22..32 = CD 2; see extract_assets.py).
 //
 // A reader thread pulls 64 KiB slices from the disc into a ring buffer with its own
-// DVD command block (independent of the engine's file reads), and an AESND voice in
-// stream mode drains the ring in real time.
+// DVD command block (independent of the engine's file reads), and a libansnd voice
+// (gcStream: through ARAM) drains the ring in real time.
 
 #include "Win95/stdMci.h"
 
@@ -18,8 +18,7 @@
 
 #include "gcOgc.h"
 #include "gcDvd.h"
-#include "gcVoice.h"
-#include "gcAesndlib.h"
+#include "gcStream.h"
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,16 +27,14 @@
 #define GCMUSIC_RATE        32000
 #define GCMUSIC_RING        (512 * 1024)
 #define GCMUSIC_READ        (32 * 1024)   // per locked SD read: keeps the game's own reads waiting <~17 ms
-#define GCMUSIC_CHUNK       (4 * DSP_STREAMBUFFER_SIZE) // see GCSND_STREAM_CHUNK in stdSound.c
+#define GCMUSIC_CHUNK       (8 * 1024)    // ~64 ms at 32 kHz stereo
 #define GCMUSIC_VOLUME_MAX  255
 
 static uint8_t*          gcMusic_pRing = NULL;
 static volatile uint32_t gcMusic_ringW = 0;      // reader thread
 static volatile uint32_t gcMusic_ringR = 0;      // DSP callback
 static uint8_t*          gcMusic_pReadBuf = NULL;
-static uint8_t*          gcMusic_aChunks[2];
-static int               gcMusic_curChunk = 0;
-static AESNDPB*          gcMusic_pVoice = NULL;
+static gcStream          gcMusic_stream;
 static dvdcmdblk         gcMusic_cmd;
 
 static lwp_t             gcMusic_thread = LWP_THREAD_NULL;
@@ -78,38 +75,18 @@ static int gcMusic_OpenTrack(int track)
     return 0;
 }
 
-// DSP callback: hand the voice its next chunk (silence on underrun).
-static void gcMusic_Feed(AESNDPB* pb)
+// Stream fill (DSP interrupt): the next chunk out of the ring, silence on underrun.
+static void gcMusic_Fill(void* ctx, uint8_t* chunk, uint32_t len)
 {
-    uint8_t* chunk = gcMusic_aChunks[gcMusic_curChunk];
-    gcMusic_curChunk ^= 1;
-
     uint32_t avail = gcMusic_ringW - gcMusic_ringR;
-    uint32_t give = avail < GCMUSIC_CHUNK ? avail : GCMUSIC_CHUNK;
+    uint32_t give = avail < len ? avail : len;
     give &= ~3u;
     uint32_t r = gcMusic_ringR % GCMUSIC_RING;
     uint32_t first = give < GCMUSIC_RING - r ? give : GCMUSIC_RING - r;
     memcpy(chunk, gcMusic_pRing + r, first);
     if (give > first) memcpy(chunk + first, gcMusic_pRing, give - first);
-    if (give < GCMUSIC_CHUNK) memset(chunk + give, 0, GCMUSIC_CHUNK - give);
+    if (give < len) memset(chunk + give, 0, len - give);
     gcMusic_ringR += give;
-
-    DCFlushRange(chunk, GCMUSIC_CHUNK);
-    AESND_SetVoiceBuffer(pb, chunk, GCMUSIC_CHUNK);
-}
-
-// Bumped when the voice is released; its callback ignores (and stops) a voice from
-// an older generation (see gcVoice.c).
-static volatile uint32_t gcMusic_voiceGen = 1;
-
-static void gcMusic_VoiceCallback(AESNDPB* pb, u32 state, void* arg)
-{
-    if ((uint32_t)(uintptr_t)arg != gcMusic_voiceGen || !gcMusic_pVoice) {
-        if (state != VOICE_STATE_STOPPED) AESND_SetVoiceStop(pb, true);
-        return;
-    }
-    if (state == VOICE_STATE_STREAM)
-        gcMusic_Feed(pb);
 }
 
 // Reader thread: keep the ring topped up from the disc, advancing through the
@@ -154,15 +131,7 @@ static void* gcMusic_ThreadMain(void* arg)
 
 static void gcMusic_StopVoice(void)
 {
-    if (gcMusic_pVoice) {
-        u32 level;
-        level = IRQ_Disable();
-        AESNDPB* pb = gcMusic_pVoice;
-        gcMusic_pVoice = NULL;
-        gcMusic_voiceGen++;
-        IRQ_Restore(level);
-        gcVoice_Free(pb, NULL);
-    }
+    gcStream_Stop(&gcMusic_stream);
 }
 
 int stdMci_Startup()
@@ -172,9 +141,7 @@ int stdMci_Startup()
 
     gcMusic_pRing = (uint8_t*)memalign(32, GCMUSIC_RING);
     gcMusic_pReadBuf = (uint8_t*)memalign(32, GCMUSIC_READ);
-    gcMusic_aChunks[0] = (uint8_t*)memalign(32, GCMUSIC_CHUNK);
-    gcMusic_aChunks[1] = (uint8_t*)memalign(32, GCMUSIC_CHUNK);
-    if (!gcMusic_pRing || !gcMusic_pReadBuf || !gcMusic_aChunks[0] || !gcMusic_aChunks[1]) {
+    if (!gcMusic_pRing || !gcMusic_pReadBuf) {
         stdPlatform_Printf("stdMci: out of memory, no music\n");
         return 0;
     }
@@ -212,15 +179,8 @@ int stdMci_Play(uint8_t trackFrom, uint8_t trackTo)
     stdPlatform_Printf("stdMci: play tracks %d-%d%s\n", trackFrom, trackTo, ok ? "" : " (not on disc)");
     if (!ok) return 0; // track not on the disc
 
-    gcMusic_pVoice = AESND_AllocateVoiceWithArg(gcMusic_VoiceCallback, (void*)(uintptr_t)gcMusic_voiceGen);
-    if (!gcMusic_pVoice) return 0;
-    AESND_SetVoiceFormat(gcMusic_pVoice, VOICE_STEREO16);
-    AESND_SetVoiceFrequency(gcMusic_pVoice, GCMUSIC_RATE);
-    AESND_SetVoiceVolume(gcMusic_pVoice, gcMusic_vol, gcMusic_vol);
-    AESND_SetVoiceStream(gcMusic_pVoice, true);
-    gcMusic_Feed(gcMusic_pVoice);
-    AESND_SetVoiceStop(gcMusic_pVoice, false);
-    return 1;
+    return gcStream_Start(&gcMusic_stream, GCMUSIC_RATE, 1, (float)gcMusic_vol / GCMUSIC_VOLUME_MAX,
+                          GCMUSIC_CHUNK, gcMusic_Fill, NULL);
 }
 
 void stdMci_SetVolume(flex_t vol)
@@ -229,8 +189,7 @@ void stdMci_SetVolume(flex_t vol)
     if (v < 0) v = 0;
     if (v > GCMUSIC_VOLUME_MAX) v = GCMUSIC_VOLUME_MAX;
     gcMusic_vol = v;
-    if (gcMusic_pVoice)
-        AESND_SetVoiceVolume(gcMusic_pVoice, v, v);
+    gcStream_SetVolume(&gcMusic_stream, (float)v / GCMUSIC_VOLUME_MAX);
 }
 
 void stdMci_Stop()

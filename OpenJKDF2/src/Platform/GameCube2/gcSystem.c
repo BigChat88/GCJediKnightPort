@@ -3,11 +3,10 @@
 
 #include "gcSystem.h"
 #include "gcCard.h"
-#include "gcVoice.h"
 #include "gcInput.h"
 #include "gcGame.h"
 
-#include "gcAesndlib.h"
+#include <ansndlib.h>
 
 #include <sys/iosupport.h>
 #include <ogc/lwp_watchdog.h>
@@ -331,12 +330,11 @@ void gcSystem_Init(void)
            (rmode->viTVMode & 3) == VI_PROGRESSIVE ? "progressive" : "interlaced",
            rmode->efbHeight, rmode->xfbHeight);
 
-    // The DSP (AESND) must be brought up before the ARAM controller is configured
-    // (gcDvd's read cache): initializing the DSP later resets ARAM DMA and any
-    // transfer in flight never completes.
-    printf("gcSystem: starting the DSP\n");
-    AESND_Init();
-    gcVoice_Init();
+    // The DSP must be brought up before the ARAM controller is configured (gcDvd's
+    // read cache): initializing the DSP later resets ARAM DMA and any transfer in
+    // flight never completes. libansnd mixes at 32 kHz (the music's rate).
+    printf("gcSystem: starting the DSP (libansnd)\n");
+    ansnd_initialize_samplerate(ANSND_OUTPUT_SAMPLERATE_32KHZ);
 }
 
 volatile uint64_t gcSystem_statPresentUs = 0;

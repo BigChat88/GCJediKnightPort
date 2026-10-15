@@ -452,6 +452,19 @@ int sithSound_LoadFileData(sithSound *sound)
         // Added: from the sound bank in ARAM (see gcSndBank.c), no disc access.
         sound->dsoundBuffer2 = dsoundBuf;
         sithSound_curDataLoaded += sound->bufferBytes;
+#ifdef GC_LIBOGC2
+        // libogc2 core (libansnd): the DSP plays the ADPCM straight from ARAM;
+        // nothing is decoded into main RAM.
+        {
+            extern int stdSound_GcBufferSetAdpcm(stdSound_buffer_t* sound, uint32_t aram, int channels, uint32_t numSamples);
+            int ch = sound->bStereo ? 2 : 1;
+            if ( stdSound_GcBufferSetAdpcm(sound->dsoundBuffer2, sound->gcAram, ch, sound->bufferBytes / (ch * 2)) )
+            {
+                sound->isLoaded |= 1u;
+                return 1;
+            }
+        }
+#endif
         buf = stdSound_BufferSetData(sound->dsoundBuffer2, sound->bufferBytes, &bufferMaxSize);
         if ( buf && (uint32_t)bufferMaxSize >= sound->bufferBytes )
         {

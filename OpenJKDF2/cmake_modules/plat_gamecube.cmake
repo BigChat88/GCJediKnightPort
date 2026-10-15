@@ -144,9 +144,8 @@ endmacro()
 
 macro(plat_link_and_package)
     if(GC_CORE_DIR STREQUAL "GameCube2")
-        # (No -laesnd: gcAesnd.c is our own aesndlib, with the DSP mixer built in.)
-        # libdvm mounts SD cards (FAT and exFAT drivers from libogc2's libfat).
-        target_link_libraries(${BIN_NAME} PRIVATE -ldvm -lfat -lbba -lz -logc -lm)
+        # Audio: libansnd. SD cards: libdvm (FAT/exFAT drivers from libogc2's libfat).
+        target_link_libraries(${BIN_NAME} PRIVATE -lansnd -ldvm -lfat -lbba -lz -logc -lm)
     else()
         target_link_libraries(${BIN_NAME} PRIVATE -lfat -laesnd -lbba -lz -logc -lm)
     endif()
