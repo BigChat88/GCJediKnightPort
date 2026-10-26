@@ -12,7 +12,6 @@ void gcNotice_Show(const char* text);
 void gcNotice_Hide(void);
 
 // Boot screen: "Loading..." until the boot's loading is done (see gcSystem).
-void gcNotice_BootLoading(void);
 
 #ifdef __cplusplus
 }

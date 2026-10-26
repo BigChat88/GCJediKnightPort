@@ -4,9 +4,6 @@
 #include "types.h"
 #include "globals.h"
 
-#include "Platform/Networking/Basic/stdComm_basic.h"
-#include "Platform/Networking/GNS/stdComm_GNS.h"
-#include "Platform/Networking/None/stdComm_none.h"
 #include "Platform/Networking/GameCube/stdComm_gc.h"
 
 #ifdef __cplusplus

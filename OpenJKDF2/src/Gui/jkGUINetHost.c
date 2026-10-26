@@ -45,7 +45,13 @@ enum jkGuiNetHostElement_t
     NETHOST_LEVEL_LISTBOX = 21,
 
     NETHOST_PORT_TEXTBOX = 26,
+#ifdef TARGET_GAMECUBE
+    NETHOST_GC_FORMAT_PERSONALITIES = 27, // Added: MotS game format (see jkGuiNetHost_GcFormatClick)
+    NETHOST_GC_FORMAT_JEDI = 28,
+    NETHOST_GC_JEDI_PERSONALITY_ONLY = 29, // Added: personalities game, Jedi personality only
+#endif
     GUI_ADVANCED_ELMT = 22, // Added
+    NETHOST_OK_BUTTON = 23, // Added
 };
 
 enum jkGuiNetHostAdvancedElement_t
@@ -64,7 +70,7 @@ enum jkGuiNetHostAdvancedElement_t
 static int32_t jkGuiNetHost_aIdk[2] = {0xd, 0xe};
 
 // MOTS altered
-static jkGuiElement jkGuiNetHost_aElements[28] =
+static jkGuiElement jkGuiNetHost_aElements[31] =
 {
     { ELEMENT_TEXT,         0, 0, NULL, 3, { 0, 410, 640, 20 }, 1, 0, NULL, NULL, NULL, NULL, { 0, 0, 0, 0, 0, { 0, 0, 0, 0 } }, 0 },
     { ELEMENT_TEXT,         0, 6, "GUI_MULTIPLAYER", 3, { 20, 20, 600, 40 }, 1, 0, NULL, NULL, NULL, NULL, { 0, 0, 0, 0, 0, { 0, 0, 0, 0 } }, 0 },
@@ -95,6 +101,12 @@ static jkGuiElement jkGuiNetHost_aElements[28] =
     { ELEMENT_TEXT, 0, 0, "GUIEXT_SERVER_PORT", 2, { 540, 80, 90, 40 }, 1, 0, NULL, NULL, NULL, NULL, { 0, 0, 0, 0, 0, { 0, 0, 0, 0 } }, 0 },
     { ELEMENT_TEXTBOX, 0, 0, NULL, 16, { 540, 125, 90, 20 }, 1, 0, NULL, NULL, NULL, NULL, { 0, 0, 0, 0, 0, { 0, 0, 0, 0 } }, 0 },
     
+#endif
+#ifdef TARGET_GAMECUBE
+    // Added: MotS's game format, as in the original host menu (only shown in MotS)
+    { ELEMENT_CHECKBOX, 0, 0, "GUINET_GAMEPERSONALITIES", 0, { 20, 365, 290, 20 }, 1, 0, "GUI_PERSONALITIES_HINT", NULL, NULL, NULL, { 0, 0, 0, 0, 0, { 0, 0, 0, 0 } }, 0 },
+    { ELEMENT_CHECKBOX, 0, 0, "GUINET_GAMEJEDIONLY", 0, { 20, 390, 290, 20 }, 1, 0, "GUI_JEDIONLY_HINT", NULL, NULL, NULL, { 0, 0, 0, 0, 0, { 0, 0, 0, 0 } }, 0 },
+    { ELEMENT_CHECKBOX, 0, 0, "GUI_JEDIONLY", 0, { 40, 375, 290, 20 }, 1, 0, "GUI_JEDIONLY_HINT", NULL, NULL, NULL, { 0, 0, 0, 0, 0, { 0, 0, 0, 0 } }, 0 },
 #endif
     { ELEMENT_END, 0, 0, NULL, 0, { 0, 0, 0, 0 }, 0, 0, NULL, NULL, NULL, NULL, { 0, 0, 0, 0, 0, { 0, 0, 0, 0 } }, 0 }
 };
@@ -182,6 +194,50 @@ static void jkGuiNetHost_GcSetRect(jkGuiElement* e, int x, int y, int w, int h)
 
 // Main screen, top to bottom: game name; episode (left) and level (right); max
 // rank; Cancel / Advanced / OK. The other options move to the Advanced screen.
+// Added: MotS's game format. Personalities: every player picks one of four
+// personalities (all rank 8, no rank limit), or only the Jedi personality with
+// "Jedi Personality Only" (MULTIMODEFLAG_2000, unused by the engine). Ranked
+// Jedi: Jedi only, up to the max rank (MULTIMODEFLAG_1000). The original host
+// menu had these (MotS's strings); the max rank only means something for ranked
+// Jedi.
+static int jkGuiNetHost_gcbRankedJedi = 0;
+
+static void jkGuiNetHost_GcShowFormat(void)
+{
+    jkGuiElement* e = jkGuiNetHost_aElements;
+    int bMots = Main_bMotsCompat != 0;
+    e[NETHOST_GC_FORMAT_PERSONALITIES].bIsVisible = bMots;
+    e[NETHOST_GC_FORMAT_JEDI].bIsVisible = bMots;
+    e[NETHOST_GC_JEDI_PERSONALITY_ONLY].bIsVisible = bMots && !jkGuiNetHost_gcbRankedJedi; // where the rank row would be
+    e[NETHOST_GC_FORMAT_PERSONALITIES].selectedTextEntry = !jkGuiNetHost_gcbRankedJedi;
+    e[NETHOST_GC_FORMAT_JEDI].selectedTextEntry = jkGuiNetHost_gcbRankedJedi;
+    int bRank = !bMots || jkGuiNetHost_gcbRankedJedi;
+    e[12].bIsVisible = bRank;                   // max rank label
+    e[NETHOST_STARS_TEXT].bIsVisible = bRank;
+    e[14].bIsVisible = bRank;                   // rank -
+    e[15].bIsVisible = bRank;                   // rank +
+}
+
+static int jkGuiNetHost_GcFormatClick(jkGuiElement *pElement, jkGuiMenu *pMenu, int32_t mouseX, int32_t mouseY, int redraw)
+{
+    jkGuiRend_PlayWav(pMenu->soundClick);
+    jkGuiNetHost_gcbRankedJedi = (pElement == &jkGuiNetHost_aElements[NETHOST_GC_FORMAT_JEDI]);
+    jkGuiNetHost_GcShowFormat();
+    if (!pMenu->focusedElement || !pMenu->focusedElement->bIsVisible)
+        pMenu->focusedElement = pElement;
+    // Only the format boxes and the rank row, over their background, one flip
+    // (a whole repaint made every element of the screen flicker).
+    static const int aIdx[7] = { NETHOST_GC_FORMAT_PERSONALITIES, NETHOST_GC_FORMAT_JEDI, NETHOST_GC_JEDI_PERSONALITY_ONLY, 12, NETHOST_STARS_TEXT, 14, 15 };
+    // (All backgrounds first: the Jedi personality box and the rank row share
+    // their place, and the hidden one's background wiped the shown one.)
+    for (int i = 0; i < 7; i++)
+        jkGuiRend_CopyVBuffer(pMenu, &jkGuiNetHost_aElements[aIdx[i]].rect);
+    for (int i = 0; i < 7; i++)
+        jkGuiRend_UpdateAndDrawClickable(&jkGuiNetHost_aElements[aIdx[i]], pMenu, 0);
+    jkGuiRend_FlipAndDraw(pMenu, NULL);
+    return 0;
+}
+
 static void jkGuiNetHost_GcLayout(void)
 {
     jkGuiElement* e = jkGuiNetHost_aElements;
@@ -191,10 +247,15 @@ static void jkGuiNetHost_GcLayout(void)
     jkGuiNetHost_GcSetRect(&e[NETHOST_EPISODE_LISTBOX], 20, 140, 290, 170);
     jkGuiNetHost_GcSetRect(&e[20], 330, 115, 290, 20);                    // choose level
     jkGuiNetHost_GcSetRect(&e[NETHOST_LEVEL_LISTBOX], 330, 140, 290, 170);
-    jkGuiNetHost_GcSetRect(&e[12], 20, 320, 130, 40);                     // max rank label
-    jkGuiNetHost_GcSetRect(&e[14], 150, 325, 30, 30);                     // rank -
-    jkGuiNetHost_GcSetRect(&e[15], 180, 325, 30, 30);                     // rank +
-    jkGuiNetHost_GcSetRect(&e[NETHOST_STARS_TEXT], 220, 325, 300, 30);
+    // MotS: the game format first, the max rank (ranked Jedi only) under it.
+    int rankY = Main_bMotsCompat ? 370 : 320;
+    jkGuiNetHost_GcSetRect(&e[NETHOST_GC_FORMAT_PERSONALITIES], 20, 320, 290, 20);
+    jkGuiNetHost_GcSetRect(&e[NETHOST_GC_FORMAT_JEDI], 20, 345, 290, 20);
+    jkGuiNetHost_GcSetRect(&e[NETHOST_GC_JEDI_PERSONALITY_ONLY], 40, 375, 400, 20); // (personalities: in place of the rank row)
+    jkGuiNetHost_GcSetRect(&e[12], 20, rankY, 130, 40);                   // max rank label
+    jkGuiNetHost_GcSetRect(&e[14], 150, rankY + 5, 30, 30);               // rank -
+    jkGuiNetHost_GcSetRect(&e[15], 180, rankY + 5, 30, 30);               // rank +
+    jkGuiNetHost_GcSetRect(&e[NETHOST_STARS_TEXT], 220, rankY + 5, 300, 30);
     for (int i = 4; i <= 11; i++) // max players .. single level
         e[i].bIsVisible = 0;
     e[16].bIsVisible = 0; // password
@@ -202,6 +263,7 @@ static void jkGuiNetHost_GcLayout(void)
     e[NETHOST_PORT_TEXTBOX - 1].bIsVisible = 0; // port (fixed, 27020)
     e[NETHOST_PORT_TEXTBOX].bIsVisible = 0;
     e[GUI_ADVANCED_ELMT].bIsVisible = 1;
+    jkGuiNetHost_GcShowFormat();
 }
 
 // The Advanced screen edits the main screen's own buffers and checkboxes; Cancel
@@ -517,7 +579,7 @@ int jkGuiNetHost_Show(jkMultiEntry3 *pMultiEntry)
     jkGuiNetHost_aElements[NETHOST_PASSWORD_TEXTBOX].selectedTextEntry = 16;
     jkGuiRend_DarrayNewStr(&jkGuiNetHost_dArray1, jkEpisode_var2 + 1, 1);
 
-    jkEpisodeTypeFlags_t loadMask = (JK_EPISODE_DEATHMATCH | JK_EPISODE_4_UNK | JK_EPISODE_SPECIAL_CTF);
+    jkEpisodeTypeFlags_t loadMask = (JK_EPISODE_DEATHMATCH | JK_EPISODE_4_UNK | JK_EPISODE_SPECIAL_CTF | JK_EPISODE_SABER_ONLY);
 #ifdef QOL_IMPROVEMENTS
     if (jkGuiNetHost_bIsCoop)
         loadMask |= JK_EPISODE_SINGLEPLAYER;
@@ -538,7 +600,11 @@ int jkGuiNetHost_Show(jkMultiEntry3 *pMultiEntry)
     // Added: for the controller: the GameCube layout (see jkGuiNetHost_GcLayout);
     // the cursor starts on the game name; down goes to the episode list (the
     // nearest element below would be the level list), A on a list picks it and
-    // moves on: episode -> level -> max rank.
+    // moves on: episode -> level -> OK.
+    jkGuiNetHost_gcbRankedJedi = (jkGuiNetHost_gameFlags & MULTIMODEFLAG_1000) != 0; // the last game's format
+    jkGuiNetHost_aElements[NETHOST_GC_JEDI_PERSONALITY_ONLY].selectedTextEntry = (jkGuiNetHost_gameFlags & MULTIMODEFLAG_2000) != 0;
+    jkGuiNetHost_aElements[NETHOST_GC_FORMAT_PERSONALITIES].clickHandlerFunc = jkGuiNetHost_GcFormatClick;
+    jkGuiNetHost_aElements[NETHOST_GC_FORMAT_JEDI].clickHandlerFunc = jkGuiNetHost_GcFormatClick;
     jkGuiNetHost_GcLayout();
     jkGuiRend_GcSetNavDown(&jkGuiNetHost_aElements[NETHOST_GAMENAME_TEXTBOX], &jkGuiNetHost_aElements[NETHOST_EPISODE_LISTBOX]);
     jkGuiNetHost_aElements[NETHOST_LEVEL_LISTBOX].clickHandlerFunc = jkGuiNetHost_GcLevelClick;
@@ -576,6 +642,19 @@ int jkGuiNetHost_Show(jkMultiEntry3 *pMultiEntry)
             pMultiEntry->maxPlayers = v10;
             jkGuiNetHost_maxPlayers = v10;
             pMultiEntry->maxRank = jkGuiNetHost_maxRank;
+#ifdef TARGET_GAMECUBE
+            // Added: MotS -- the game format chosen (see jkGuiNetHost_GcShowFormat).
+            // Personality characters are all rank 8: no limit for them.
+            if (Main_bMotsCompat) {
+                if (jkGuiNetHost_gcbRankedJedi)
+                    pMultiEntry->multiModeFlags |= MULTIMODEFLAG_1000;
+                else {
+                    pMultiEntry->maxRank = 8;
+                    if (jkGuiNetHost_aElements[NETHOST_GC_JEDI_PERSONALITY_ONLY].selectedTextEntry)
+                        pMultiEntry->multiModeFlags |= MULTIMODEFLAG_2000;
+                }
+            }
+#endif
             v23 = wstr_to_int_clamped(v26, 1, 100);
             v11 = (__int64)((flex_d_t)v23 * 60000.0);
             pMultiEntry->timeLimit = v11;
@@ -671,7 +750,7 @@ int jkGuiNetHost_Show(jkMultiEntry3 *pMultiEntry)
             jkGuiNetHost_bIsDedicated = !!jkGuiNetHost_aSettingsElements[4].selectedTextEntry;
             jkGuiNetHost_bIsCoop = !!jkGuiNetHost_aSettingsElements[5].selectedTextEntry;
 
-            jkEpisodeTypeFlags_t loadMask = (JK_EPISODE_DEATHMATCH | JK_EPISODE_4_UNK | JK_EPISODE_SPECIAL_CTF);
+            jkEpisodeTypeFlags_t loadMask = (JK_EPISODE_DEATHMATCH | JK_EPISODE_4_UNK | JK_EPISODE_SPECIAL_CTF | JK_EPISODE_SABER_ONLY);
             if (jkGuiNetHost_bIsCoop)
                 loadMask |= JK_EPISODE_SINGLEPLAYER;
             jkGuiSingleplayer_EnumEpisodes(&jkGuiNetHost_dArray1, &jkGuiNetHost_aElements[NETHOST_EPISODE_LISTBOX], 0, loadMask);
@@ -775,14 +854,14 @@ int jkGuiNetHost_sub_4119D0(jkGuiElement *pElement, jkGuiMenu *pMenu, int32_t mo
 }
 
 #ifdef TARGET_GAMECUBE
-// Added: A on the level list picks it and goes on to the row below (max rank),
-// instead of starting the game right away (that's OK's job now).
+// Added: A on the level list picks it and goes on to OK, instead of starting the
+// game right away (the max rank is a row above, there to go back to).
 static int jkGuiNetHost_GcLevelClick(jkGuiElement *pElement, jkGuiMenu *pMenu, int32_t mouseX, int32_t mouseY, int redraw)
 {
     if (!jkGuiRend_GcIsAPress())
         return jkGuiRend_ClickSound(pElement, pMenu, mouseX, mouseY, redraw);
     jkGuiRend_PlayWav(pMenu->soundClick);
-    jkGuiRend_GcFocus(pMenu, &jkGuiNetHost_aElements[14]); // rank -
+    jkGuiRend_GcFocus(pMenu, &jkGuiNetHost_aElements[NETHOST_OK_BUTTON]);
     return 0;
 }
 #endif

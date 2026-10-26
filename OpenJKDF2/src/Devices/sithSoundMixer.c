@@ -457,7 +457,7 @@ sithPlayingSound* sithSoundMixer_PlaySoundThing(sithSound *hSnd, SithThing *pThi
     }
     if ( (playflags & SITHSOUNDFLAG_LOOP) != 0 || (sithCamera_g_pCurCamera && (v34 <= maxRadius)) )
     {
-        if ( (pThing->type == SITH_THING_ACTOR || pThing->type == SITH_THING_PLAYER) && (playflags & SITHSOUNDFLAG_VOICE) != 0 && (playflags & SITHSOUNDFLAG_HIGHEST_PRIO|SITHSOUNDFLAG_HIGHPRIO) == 0 )
+        if ( (pThing->type == SITH_THING_ACTOR || pThing->type == SITH_THING_PLAYER) && (playflags & SITHSOUNDFLAG_VOICE) != 0 && (playflags & (SITHSOUNDFLAG_HIGHEST_PRIO|SITHSOUNDFLAG_HIGHPRIO)) == 0 )
         {
             if ( pThing->actorParams.field_1BC > sithTime_g_msecGameTime )
                 return 0;

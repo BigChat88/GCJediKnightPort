@@ -1158,6 +1158,16 @@ int sithWeapon_ProcessWeaponControls(SithThing *pThing, flex_t secDeltaTime)
                     if ( sithWeapon_SelectWeapon(pThing, sithInventory_SelectWeaponFollowing(inputFunc - INPUT_FUNC_ACTIVATE), 0) )
                         break;
                 }
+#ifdef TARGET_GAMECUBE
+                // Added: the pad's lightsaber button (Y) is bound to SELECT0, JK's
+                // saber key. MotS moved the saber onto key 1 (fists/saber) and gave 0
+                // another weapon: there, Y picks the saber straight away (weapon 11,
+                // as its cogs name it).
+                else if (inputFunc == INPUT_FUNC_SELECT0) {
+                    if ( sithWeapon_SelectWeapon(pThing, sithInventory_SelectWeaponFollowing(11), 0) )
+                        break;
+                }
+#endif
                 else {
                     flex_t fVar7 = 0.0;
                     int iVar2 = sithInventory_GetCurrentWeapon(pThing);

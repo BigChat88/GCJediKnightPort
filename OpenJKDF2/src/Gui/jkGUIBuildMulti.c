@@ -441,8 +441,16 @@ int jkGuiBuildMulti_ShowEditCharacter(BOOL bIdk)
     jkGuiBuildMulti_buttons[3].wstr = &jkGuiBuildMulti_waTmp[32];
     jkGuiRend_MenuSetReturnKeyShortcutElement(&jkGuiBuildMulti_menu, &jkGuiBuildMulti_buttons[15]);
     jkGuiRend_MenuSetEscapeKeyShortcutElement(&jkGuiBuildMulti_menu, &jkGuiBuildMulti_buttons[13]);
+#ifdef TARGET_GAMECUBE
+    // Added: only hidden. This menu isn't on screen yet: drawing them hidden put
+    // its background (bkBuildMulti) over the previous screen -- a smudge next to
+    // the lightning of the new character screen.
+    jkGuiBuildMulti_buttons[4].bIsVisible = 0;
+    jkGuiBuildMulti_buttons[5].bIsVisible = 0;
+#else
     jkGuiRend_SetVisibleAndDraw(&jkGuiBuildMulti_buttons[4], &jkGuiBuildMulti_menu, 0);
     jkGuiRend_SetVisibleAndDraw(&jkGuiBuildMulti_buttons[5], &jkGuiBuildMulti_menu, 0);
+#endif
     jkGuiBuildMulti_numSabers = 0;
     jkGuiBuildMulti_bEditShowing = 1;
     if ( stdConffile_Open("misc\\sabers.dat") )
@@ -1081,6 +1089,13 @@ LABEL_8:
     return v9;
 }
 
+#ifdef TARGET_GAMECUBE
+// Added: format of the characters jkGuiBuildMulti_Show2 lists (MotS game being
+// joined or hosted: 1 ranked Jedi, 0 personalities), -1 for any.
+static int jkGuiBuildMulti_gcFormatFilter = -1;
+static int jkGuiBuildMulti_gcPersonalityFilter = -1; // only this personality (-1: any)
+#endif
+
 int jkGuiBuildMulti_Show2(Darray *pDarray, jkGuiElement *pElement, int minIdk, int maxIdk, int idx)
 {
     int v5; // ebp
@@ -1119,6 +1134,14 @@ int jkGuiBuildMulti_Show2(Darray *pDarray, jkGuiElement *pElement, int minIdk, i
                 name[31] = 0;
                 jkPlayer_MPCParse(v8, &playerInfo, jkPlayer_playerShortName, name, 1);
                 v9 = jkPlayer_GetJediRank();
+#ifdef TARGET_GAMECUBE
+                // Added: only characters of the game's format (MotS)
+                extern int jkPlayer_gcbJediFormat;
+                if ( jkGuiBuildMulti_gcFormatFilter >= 0 && jkPlayer_gcbJediFormat != jkGuiBuildMulti_gcFormatFilter )
+                    v9 = maxIdk + 1;
+                if ( jkGuiBuildMulti_gcPersonalityFilter >= 0 && jkPlayer_personality != jkGuiBuildMulti_gcPersonalityFilter )
+                    v9 = maxIdk + 1;
+#endif
                 if ( v9 >= minIdk && v9 <= maxIdk )
                 {
                     jkGuiRend_AddStringEntry(pDarray, a2a, 0);
@@ -1210,12 +1233,12 @@ int jkGuiBuildMulti_ShowNewCharacter(int rank, int bGameFormatIsJK, int bHasNoVa
     else {
         if ( rank < 0 )
         {
-            jkGuiRend_SetVisibleAndDraw(&jkGuiBuildMulti_pNewCharacterElements[5], jkGuiBuildMulti_pNewCharacterMenu, 0); // 4
+            jkGuiBuildMulti_pNewCharacterElements[5].bIsVisible = 0; // 4 (Added: not drawn, the menu isn't shown yet)
             jkGuiBuildMulti_pNewCharacterElements[6].wstr = NULL; // 5
         }
         else
         {
-            jkGuiRend_SetVisibleAndDraw(&jkGuiBuildMulti_pNewCharacterElements[5], jkGuiBuildMulti_pNewCharacterMenu, 1); // 4
+            jkGuiBuildMulti_pNewCharacterElements[5].bIsVisible = 1; // 4 (Added: not drawn, the menu isn't shown yet)
             stdString_snprintf(v15, 32, "RANK_%d_L", rank);
             a2a = jkStrings_GetUniStringWithFallback(v15);
             v4 = jkStrings_GetUniStringWithFallback("GUI_RANK");
@@ -1310,6 +1333,10 @@ LABEL_16:
     sithPlayer_SetInvItemAmount(SITHBIN_SPEND_STARS, (flex_d_t)jkPlayer_GetJediRank() * 3.0);
     sithPlayer_SetInvItemAmount(SITHBIN_NEW_STARS, 0.0);
     if (Main_bMotsCompat) {
+#ifdef TARGET_GAMECUBE
+        extern int jkPlayer_gcbJediFormat;
+        jkPlayer_gcbJediFormat = jkGuiBuildMulti_pNewCharacterElements[5].selectedTextEntry == 0; // Added
+#endif
         if (jkGuiBuildMulti_pNewCharacterElements[5].selectedTextEntry == 0) {
             jkPlayer_personality = 1;
         }
@@ -1347,13 +1374,26 @@ int jkGuiBuildMulti_FUN_00420930(jkGuiElement *pElement,jkGuiMenu *pMenu,int32_t
     jkGuiBuildMulti_pNewCharacterElements[12].bIsVisible = 0;
 
     // Added: Prevent infloop
-    if (!pMenu->focusedElement->bIsVisible) {
+    if (pMenu && !pMenu->focusedElement) { // Added: no focus with the controller: stay on the checkbox
+        pMenu->focusedElement = pElement;
+    }
+    else if (pMenu && !pMenu->focusedElement->bIsVisible) {
         pMenu->focusedElement = &jkGuiBuildMulti_pNewCharacterElements[14];
     }
 
     if (pMenu != (jkGuiMenu *)0x0) {
+#ifdef TARGET_RETRO_HOMEBREW
+        // Added: only the format boxes and the rank / personality rows, over their
+        // background, one flip (a whole repaint made the screen flicker).
+        for (int i = 5; i <= 12; i++) // all backgrounds first (overlapping rows)
+            jkGuiRend_CopyVBuffer(pMenu, &jkGuiBuildMulti_pNewCharacterElements[i].rect);
+        for (int i = 5; i <= 12; i++)
+            jkGuiRend_UpdateAndDrawClickable(&jkGuiBuildMulti_pNewCharacterElements[i], pMenu, 0);
+        jkGuiRend_FlipAndDraw(pMenu, NULL);
+#else
         jkGuiRend_Paint(pMenu);
         jkGuiRend_Paint(pMenu);
+#endif
     }
     return 0;
 }
@@ -1373,13 +1413,26 @@ int jkGuiBuildMulti_FUN_004209b0(jkGuiElement *pElement,jkGuiMenu *pMenu, int32_
     jkGuiBuildMulti_pNewCharacterElements[12].bIsVisible = 1;
 
     // Added: Prevent infloop
-    if (!pMenu->focusedElement->bIsVisible) {
+    if (pMenu && !pMenu->focusedElement) { // Added: no focus with the controller: stay on the checkbox
+        pMenu->focusedElement = pElement;
+    }
+    else if (pMenu && !pMenu->focusedElement->bIsVisible) {
         pMenu->focusedElement = &jkGuiBuildMulti_pNewCharacterElements[14];
     }
 
     if (pMenu != (jkGuiMenu *)0x0) {
+#ifdef TARGET_RETRO_HOMEBREW
+        // Added: only the format boxes and the rank / personality rows, over their
+        // background, one flip (a whole repaint made the screen flicker).
+        for (int i = 5; i <= 12; i++) // all backgrounds first (overlapping rows)
+            jkGuiRend_CopyVBuffer(pMenu, &jkGuiBuildMulti_pNewCharacterElements[i].rect);
+        for (int i = 5; i <= 12; i++)
+            jkGuiRend_UpdateAndDrawClickable(&jkGuiBuildMulti_pNewCharacterElements[i], pMenu, 0);
+        jkGuiRend_FlipAndDraw(pMenu, NULL);
+#else
         jkGuiRend_Paint(pMenu);
         jkGuiRend_Paint(pMenu);
+#endif
     }
     return 0;
 }
@@ -1393,11 +1446,15 @@ int jkGuiBuildMulti_menuNewCharacter_rankArrowButtonClickHandler(jkGuiElement *p
     char16_t *v7; // [esp-4h] [ebp-18h]
     char tmp[32+1]; // [esp+4h] [ebp-10h] BYREF
 
+    // Added: no higher than the game being joined allows (jkGuiBuildMulti_jediRank:
+    // its max rank, -1 for none). A character above it isn't offered for that
+    // game, so the joiner was sent back to create one, over and over.
+    int32_t maxRank = (jkGuiBuildMulti_jediRank >= 0 && jkGuiBuildMulti_jediRank < 8) ? jkGuiBuildMulti_jediRank : 8;
     if ( pElement->hoverId == 103 )
     {
         v4 = jkPlayer_GetJediRank() - 1;
         if ( v4 < 0 )
-            v4 = 8;
+            v4 = maxRank;
         jkPlayer_SetRank(v4);
         stdString_snprintf(tmp, 32, "RANK_%d_L", v4);
         v7 = jkStrings_GetUniStringWithFallback(tmp);
@@ -1408,7 +1465,7 @@ int jkGuiBuildMulti_menuNewCharacter_rankArrowButtonClickHandler(jkGuiElement *p
     if ( pElement->hoverId == 104 )
     {
         v2 = jkPlayer_GetJediRank() + 1;
-        if ( v2 > 8 )
+        if ( v2 > maxRank )
             v2 = 0;
         jkPlayer_SetRank(v2);
         stdString_snprintf(tmp, 32, "RANK_%d_L", v2);
@@ -1493,6 +1550,20 @@ int jkGuiBuildMulti_ShowLoad(jkPlayerMpcInfo *pPlayerMpcInfo, char *pStrEpisode,
     v5 = jkStrings_GetUniStringWithFallback("GUI_S_MULTIPLAYER_CHARACTERS");
     jk_snwprintf(&jkGuiBuildMulti_wTmp[64], 0x40u, v5, jkPlayer_playerShortName);
     jkGuiBuildMulti_menuLoadCharacter_buttons[2].wstr = &jkGuiBuildMulti_wTmp[64];
+    // Added: MotS personality characters are always rank 8; a personalities game
+    // (no MULTIMODEFLAG_1000) takes them whatever its max rank (with a lower one,
+    // no character was ever valid and the joiner was asked for a new one forever).
+#ifdef TARGET_GAMECUBE
+    // Added: the game's format flags (see JKGUIMP_FORMAT_FLAGS): ranked Jedi, or a
+    // personalities game for the Jedi personality only.
+    jkGuiBuildMulti_gcPersonalityFilter = (Main_bMotsCompat && (bGameFormatIsJK & MULTIMODEFLAG_2000)) ? 1 : -1;
+    bGameFormatIsJK = (bGameFormatIsJK & MULTIMODEFLAG_1000) != 0;
+#endif
+    if (Main_bMotsCompat && !bGameFormatIsJK)
+        rank = 8;
+#ifdef TARGET_GAMECUBE
+    jkGuiBuildMulti_gcFormatFilter = Main_bMotsCompat ? (bGameFormatIsJK ? 1 : 0) : -1;
+#endif
     jkEpisode_LoadVerify();
     v6 = -1;
     v7 = 0;
@@ -1614,6 +1685,10 @@ LABEL_18:
     }
     jkGuiRend_DarrayFree(&darr);
     stdStrTable_Free(&strtable); // Added: memleak
+#ifdef TARGET_GAMECUBE
+    jkGuiBuildMulti_gcFormatFilter = -1;
+    jkGuiBuildMulti_gcPersonalityFilter = -1;
+#endif
     jkGui_SetModeGame();
     return v22;
 }

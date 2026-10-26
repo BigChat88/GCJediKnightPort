@@ -16,8 +16,8 @@
  * 3. This notice may not be removed or altered from any source distribution.
  *
  * Changes for OpenJKDF2 (GameCube), marked "OpenJKDF2:" below. It replaces the
- * library's code (same API, linked before -laesnd; the DSP mixer program still
- * comes from libaesnd.a):
+ * library's code (same API; no -laesnd at all, the DSP mixer
+ * program -- libogc v3.1.0's -- is in gcAesndDsp.c):
  *  - On GameCube every voice's data goes to ARAM through an intermediate buffer
  *    in main RAM, sent with an asynchronous ARQ request. libaesnd uses ONE such
  *    buffer for all voices (and for both halves of a voice): while a request
@@ -38,11 +38,13 @@
 #include <ogc/lwp_watchdog.h>
 #include <ogc/machine/processor.h>
 
-#include "aesndlib.h"
+#include "gcAesndlib.h"
 // OpenJKDF2: the DSP mixer program, from libaesnd.a (aesnd_dsp_mixer_bin.o).
-extern const u8 aesnd_dsp_mixer_bin[];
-extern const u8 aesnd_dsp_mixer_bin_end[];
-#define aesnd_dsp_mixer_bin_size ((u32)(aesnd_dsp_mixer_bin_end - aesnd_dsp_mixer_bin))
+// The mixer microcode is built in (gcAesndDsp.c), not taken from libaesnd.
+extern const u8 gcAesnd_dspMixer[];
+extern const u32 gcAesnd_dspMixerSize;
+#define aesnd_dsp_mixer_bin gcAesnd_dspMixer
+#define aesnd_dsp_mixer_bin_size gcAesnd_dspMixerSize
 
 #define PB_STRUCT_SIZE			64
 #define DSP_DRAMSIZE			8192

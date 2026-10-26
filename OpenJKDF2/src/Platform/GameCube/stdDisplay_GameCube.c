@@ -277,6 +277,20 @@ int stdDisplay_SetMode(unsigned int modeIdx, const void *palette, int paged)
     // writes to a NULL surface and the subtitles silently never appear.
     if (!Video_otherBuf.surface_lock_alloc)
         Video_otherBuf.surface_lock_alloc = (char*)STD_ALLOC(Video_otherBuf.format.size);
+    // Added: say so right here if there is no memory for them (they were NULL on
+    // hardware and the first cutscene crashed writing to them).
+    if (!Video_menuBuffer.surface_lock_alloc || !Video_otherBuf.surface_lock_alloc) {
+        extern void gcSystem_Panic(const char* fmt, ...) __attribute__((noreturn));
+        extern uint32_t gcSystem_FreeBytes(void);
+        extern uint32_t gcSystem_LargestFreeBytes(void);
+        extern void* sbrk(ptrdiff_t);
+        extern void* SYS_GetArena1Lo(void);
+        extern void* SYS_GetArena1Hi(void);
+        gcSystem_Panic("No memory for the menu buffers (2 x %u bytes).\n  free %u KB, largest %u KB,\n  heap end %p, arena %p-%p",
+                       (unsigned)Video_menuBuffer.format.size,
+                       (unsigned)(gcSystem_FreeBytes() / 1024), (unsigned)(gcSystem_LargestFreeBytes() / 1024),
+                       sbrk(0), SYS_GetArena1Lo(), SYS_GetArena1Hi());
+    }
 
 #if 0
     glGenTextures(1, &Video_menuTexId);
@@ -361,6 +375,14 @@ int stdDisplay_GcAllocPixels(tVBuffer* out)
         std3D_GcReleaseMemory();
         sithSound_FreeUpMemory(out->format.size + 0x80000);
         out->surface_lock_alloc = (char*)memalign(32, out->format.size);
+    }
+    if (!out->surface_lock_alloc) {
+        // Added: the sound arena, without its idle sounds (a dialog's 640x480
+        // backdrop in a big level: the main heap had no 300 KiB piece left).
+        extern uint32_t sithSound_GcFreeAllIdle(void);
+        extern void* gcHeap_SndArenaAlloc(size_t n);
+        sithSound_GcFreeAllIdle();
+        out->surface_lock_alloc = (char*)gcHeap_SndArenaAlloc(out->format.size);
     }
     if (!out->surface_lock_alloc)
         return 0;
@@ -534,8 +556,11 @@ int stdDisplay_VBufferCopy(tVBuffer *vbuf, tVBuffer *vbuf2, unsigned int blit_x,
 
     if (dstPixels == srcPixels)
     {
-        size_t buf_len = srcStride * dstRect.width * dstRect.height;
+        // Added: rows of srcStride bytes, rect->height of them (it multiplied by the
+        // width too: hundreds of MiB asked for, and the copy then wrote to NULL).
+        size_t buf_len = (size_t)srcStride * rect->height + rect->width;
         uint8_t* dstPixels = (uint8_t*)STD_ALLOC(buf_len);
+        if (!dstPixels) return 0;
         int has_alpha = 0;//!(rect->width == 640);
 
         rdRect dstRect_inter = {0, 0, rect->width, rect->height};

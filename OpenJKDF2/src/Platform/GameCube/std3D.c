@@ -376,8 +376,7 @@ static void std3D_SetBlend(int blendClass)
 
 // Added: the sky is drawn at the far end of the depth range, whatever the depth
 // of its faces (its texture is projected on the screen anyway). It's then the
-// background: the glow can tell it apart (see std3D_DrawGlow), and the fog sees
-// it at one fixed distance. Only things in front of the sky are drawn over it,
+// background: the fog sees it at one fixed distance. Only things in front of the sky are drawn over it,
 // as before.
 static int std3D_bSkyDepthBound = 0;
 
@@ -534,6 +533,11 @@ void std3D_Shutdown()
 int std3D_IsReady()        { return std3D_bHasInitted; }
 void std3D_FreeResources() {}
 void std3D_UpdateSettings() {}
+
+// The first-person weapon is drawn after the depth is reset (std3D_ClearZBuffer):
+// everything but the sky is set to this depth, just short of the far end, so the
+// weapon is drawn in front of the world (walls no longer cut through it).
+#define STD3D_POV_CLEAR_DEPTH ((float)0xFEFEFE / (float)0xFFFFFF)
 
 int std3D_StartScene()
 {
@@ -698,7 +702,7 @@ extern int jkGuiBuildMulti_bRendering;
 
 // --- Display options (Setup > Display), kept in the settings ---------------------
 // Distance fog (on by default; the game never had fog, so it can be turned off),
-// the action hand icon and the glow (both on by default).
+// and the action hand icon (on by default).
 static int std3D_gcbFog = -1, std3D_gcbHand = -1; // -1: not read from the settings yet
 
 int std3D_GcGetFog(void)
@@ -843,238 +847,14 @@ static void std3D_FogOff(void)
     std3D_bSceneFog = 0;
 }
 
-// --- Glow (bloom) --------------------------------------------------------------------
-// Bright parts of the 3D scene (sabers, bolts, explosions, lights) get a soft halo.
-// With EFB copies, as GameCube games do it: the scene is copied at half size, its
-// bright part (TEV: (colour - threshold) * 2) is drawn blurred (4 offset taps) into
-// a corner of the EFB and copied at 160x120, then once more at 80x60 for a wider
-// halo; both are summed in the corner at 160x120, the corner is put back from a
-// copy taken first and the sum is added over the screen in one pass. ~430 KiB,
-// allocated only while the option is on (default).
-#define STD3D_GLOW_THRESHOLD 0x90
-#define STD3D_GLOW_W1 320
-#define STD3D_GLOW_H1 240
-#define STD3D_GLOW_W2 160
-#define STD3D_GLOW_H2 120
-#define STD3D_GLOW_W3 80
-#define STD3D_GLOW_H3 60
-static int      std3D_gcbGlow = -1;
-static void*    std3D_pGlow1 = NULL;   // scene, half size (RGB565)
-static void*    std3D_pGlowCorner = NULL; // the corner used as scratch, saved (RGBA8)
-static void*    std3D_pGlow2 = NULL;   // bright + blurred, 160x120 (RGB565)
-static void*    std3D_pGlow3 = NULL;   // blurred more, 80x60 (RGB565)
-static void*    std3D_pGlowZ = NULL;   // depth, half size (Z16): the sky is left out
-static GXTexObj std3D_glow1Obj, std3D_glowCornerObj, std3D_glow2Obj, std3D_glow3Obj, std3D_glowZObj;
-
-static void std3D_GlowFree(void)
-{
-    if (std3D_pGlow1 || std3D_pGlowCorner || std3D_pGlow2 || std3D_pGlow3 || std3D_pGlowZ)
-        GX_DrawDone(); // the GPU may still read or write them
-    free(std3D_pGlow1); std3D_pGlow1 = NULL;
-    free(std3D_pGlowCorner); std3D_pGlowCorner = NULL;
-    free(std3D_pGlow2); std3D_pGlow2 = NULL;
-    free(std3D_pGlow3); std3D_pGlow3 = NULL;
-    free(std3D_pGlowZ); std3D_pGlowZ = NULL;
-}
-
-static int std3D_GlowAlloc(void)
-{
-    if (std3D_pGlow1) return 1;
-    std3D_pGlow1 = memalign(32, STD3D_GLOW_W1 * STD3D_GLOW_H1 * 2);
-    std3D_pGlowCorner = memalign(32, STD3D_GLOW_W2 * STD3D_GLOW_H2 * 4);
-    std3D_pGlow2 = memalign(32, STD3D_GLOW_W2 * STD3D_GLOW_H2 * 2);
-    std3D_pGlow3 = memalign(32, STD3D_GLOW_W3 * STD3D_GLOW_H3 * 2);
-    std3D_pGlowZ = memalign(32, STD3D_GLOW_W1 * STD3D_GLOW_H1 * 2);
-    if (!std3D_pGlow1 || !std3D_pGlowCorner || !std3D_pGlow2 || !std3D_pGlow3 || !std3D_pGlowZ) {
-        std3D_GlowFree();
-        return 0;
-    }
-    GX_InitTexObj(&std3D_glow1Obj, std3D_pGlow1, STD3D_GLOW_W1, STD3D_GLOW_H1, GX_TF_RGB565, GX_CLAMP, GX_CLAMP, GX_FALSE);
-    GX_InitTexObjFilterMode(&std3D_glow1Obj, GX_LINEAR, GX_LINEAR);
-    GX_InitTexObj(&std3D_glowCornerObj, std3D_pGlowCorner, STD3D_GLOW_W2, STD3D_GLOW_H2, GX_TF_RGBA8, GX_CLAMP, GX_CLAMP, GX_FALSE);
-    GX_InitTexObjFilterMode(&std3D_glowCornerObj, GX_NEAR, GX_NEAR);
-    GX_InitTexObj(&std3D_glow2Obj, std3D_pGlow2, STD3D_GLOW_W2, STD3D_GLOW_H2, GX_TF_RGB565, GX_CLAMP, GX_CLAMP, GX_FALSE);
-    GX_InitTexObjFilterMode(&std3D_glow2Obj, GX_LINEAR, GX_LINEAR);
-    GX_InitTexObj(&std3D_glow3Obj, std3D_pGlow3, STD3D_GLOW_W3, STD3D_GLOW_H3, GX_TF_RGB565, GX_CLAMP, GX_CLAMP, GX_FALSE);
-    GX_InitTexObjFilterMode(&std3D_glow3Obj, GX_LINEAR, GX_LINEAR);
-    GX_InitTexObj(&std3D_glowZObj, std3D_pGlowZ, STD3D_GLOW_W1, STD3D_GLOW_H1, GX_TF_Z16, GX_CLAMP, GX_CLAMP, GX_FALSE);
-    GX_InitTexObjFilterMode(&std3D_glowZObj, GX_NEAR, GX_NEAR);
-    return 1;
-}
-
-int std3D_GcGetGlow(void)
-{
-    if (std3D_gcbGlow < 0) std3D_gcbGlow = wuRegistry_GetBool("gcGlow", 1) ? 1 : 0;
-    return std3D_gcbGlow;
-}
-
-void std3D_GcSetGlow(int b)
-{
-    std3D_gcbGlow = b ? 1 : 0;
-    wuRegistry_SaveBool("gcGlow", std3D_gcbGlow);
-    if (!std3D_gcbGlow) std3D_GlowFree();
-}
-
 // EFB region -> texture (half: 2x2 box filtered).
-static void std3D_GlowCopy(int x, int y, int w, int h, u8 fmt, int bHalf, void* pDst)
+static void std3D_EfbCopy(int x, int y, int w, int h, u8 fmt, int bHalf, void* pDst)
 {
     GX_SetTexCopySrc(x, y, w, h);
     GX_SetTexCopyDst(bHalf ? w / 2 : w, bHalf ? h / 2 : h, fmt, bHalf ? GX_TRUE : GX_FALSE);
     GX_CopyTex(pDst, GX_FALSE);
     GX_PixModeSync();
     GX_InvalidateTexAll();
-}
-
-static void std3D_GlowQuad(float x0, float y0, float x1, float y1, float du, float dv, u32 c)
-{
-    GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
-        GX_Position3f32(x0, y0, 0.0f); GX_Color1u32(c); GX_TexCoord2f32(0.0f + du, 0.0f + dv);
-        GX_Position3f32(x1, y0, 0.0f); GX_Color1u32(c); GX_TexCoord2f32(1.0f + du, 0.0f + dv);
-        GX_Position3f32(x1, y1, 0.0f); GX_Color1u32(c); GX_TexCoord2f32(1.0f + du, 1.0f + dv);
-        GX_Position3f32(x0, y1, 0.0f); GX_Color1u32(c); GX_TexCoord2f32(0.0f + du, 1.0f + dv);
-    GX_End();
-}
-
-// 4 taps around the centre, each a quarter: a small blur on top of the bilinear one.
-static void std3D_GlowTaps(float w, float h, float texW, float texH)
-{
-    const float o = 1.5f;
-    std3D_GlowQuad(0, 0, w, h, -o / texW, -o / texH, 0x404040FF);
-    std3D_GlowQuad(0, 0, w, h,  o / texW, -o / texH, 0x404040FF);
-    std3D_GlowQuad(0, 0, w, h, -o / texW,  o / texH, 0x404040FF);
-    std3D_GlowQuad(0, 0, w, h,  o / texW,  o / texH, 0x404040FF);
-}
-
-static void std3D_GlowTevModulate(void)
-{
-    GX_SetNumTevStages(1);
-    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
-    GX_SetTevOp(GX_TEVSTAGE0, GX_MODULATE);
-}
-
-static void std3D_DrawGlow(void)
-{
-    if (!std3D_GcGetGlow() || jkGuiBuildMulti_bRendering || !std3D_GlowAlloc()) return;
-    int W = gcSystem_pRmode->fbWidth, H = gcSystem_pRmode->efbHeight;
-
-    // The scene, and the corner about to be used as scratch.
-    std3D_GlowCopy(0, 0, W, H, GX_TF_RGB565, 1, std3D_pGlow1);
-    std3D_GlowCopy(0, 0, W, H, GX_TF_Z16, 1, std3D_pGlowZ);
-    std3D_GlowCopy(0, 0, STD3D_GLOW_W2, STD3D_GLOW_H2, GX_TF_RGBA8, 0, std3D_pGlowCorner);
-
-    std3D_LoadOrthoProjection();
-    GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
-    GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
-    GX_SetNumTexGens(1);
-    GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
-
-    // Corner to black.
-    GX_SetNumTevStages(1);
-    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
-    GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
-    GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
-    std3D_GlowQuad(0, 0, STD3D_GLOW_W2, STD3D_GLOW_H2, 0, 0, 0x000000FF);
-
-    // Bright part of the scene, blurred, at 160x120: stage 0 (texel - threshold) * 2;
-    // stages 1-3 drop it where the depth is the sky's (both bytes of the Z16 texel
-    // 0xFF: the far end, see std3D_SetSkyDepth), so a bright sky doesn't glow:
-    // reg0 = bright if byte 1 < 0xFF, reg1 = bright - reg0, then reg0 + (reg1 if
-    // byte 2 < 0xFF); stage 4 times the vertex colour (the tap's weight).
-    GXColor k = { STD3D_GLOW_THRESHOLD, STD3D_GLOW_THRESHOLD, STD3D_GLOW_THRESHOLD, 0xFF };
-    GX_SetNumTevStages(5);
-    GX_SetTevKColor(GX_KCOLOR0, k);
-    GX_SetTevKColorSel(GX_TEVSTAGE0, GX_TEV_KCSEL_K0);
-    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
-    GX_SetTevColorIn(GX_TEVSTAGE0, GX_CC_KONST, GX_CC_ZERO, GX_CC_ZERO, GX_CC_TEXC);
-    GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_SUB, GX_TB_ZERO, GX_CS_SCALE_2, GX_TRUE, GX_TEVPREV);
-    GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
-    GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-
-    GX_SetTevKColorSel(GX_TEVSTAGE1, GX_TEV_KCSEL_1);
-    GX_SetTevOrder(GX_TEVSTAGE1, GX_TEXCOORD0, GX_TEXMAP2, GX_COLORNULL);
-    GX_SetTevColorIn(GX_TEVSTAGE1, GX_CC_KONST, GX_CC_TEXC, GX_CC_CPREV, GX_CC_ZERO);
-    GX_SetTevColorOp(GX_TEVSTAGE1, GX_TEV_COMP_R8_GT, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVREG0);
-    GX_SetTevAlphaIn(GX_TEVSTAGE1, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
-    GX_SetTevAlphaOp(GX_TEVSTAGE1, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVREG0);
-
-    GX_SetTevOrder(GX_TEVSTAGE2, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLORNULL);
-    GX_SetTevColorIn(GX_TEVSTAGE2, GX_CC_C0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
-    GX_SetTevColorOp(GX_TEVSTAGE2, GX_TEV_SUB, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVREG1);
-    GX_SetTevAlphaIn(GX_TEVSTAGE2, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
-    GX_SetTevAlphaOp(GX_TEVSTAGE2, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVREG1);
-
-    GX_SetTevKColorSel(GX_TEVSTAGE3, GX_TEV_KCSEL_1);
-    GX_SetTevOrder(GX_TEVSTAGE3, GX_TEXCOORD0, GX_TEXMAP2, GX_COLORNULL);
-    GX_SetTevColorIn(GX_TEVSTAGE3, GX_CC_KONST, GX_CC_TEXA, GX_CC_C1, GX_CC_C0);
-    GX_SetTevColorOp(GX_TEVSTAGE3, GX_TEV_COMP_R8_GT, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-    GX_SetTevAlphaIn(GX_TEVSTAGE3, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
-    GX_SetTevAlphaOp(GX_TEVSTAGE3, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-
-    GX_SetTevOrder(GX_TEVSTAGE4, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
-    GX_SetTevColorIn(GX_TEVSTAGE4, GX_CC_ZERO, GX_CC_CPREV, GX_CC_RASC, GX_CC_ZERO);
-    GX_SetTevColorOp(GX_TEVSTAGE4, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-    GX_SetTevAlphaIn(GX_TEVSTAGE4, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
-    GX_SetTevAlphaOp(GX_TEVSTAGE4, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-    GX_SetBlendMode(GX_BM_BLEND, GX_BL_ONE, GX_BL_ONE, GX_LO_CLEAR);
-    GX_LoadTexObj(&std3D_glow1Obj, GX_TEXMAP0);
-    GX_LoadTexObj(&std3D_glowZObj, GX_TEXMAP2);
-    std3D_GlowTaps(STD3D_GLOW_W2, STD3D_GLOW_H2, STD3D_GLOW_W1, STD3D_GLOW_H1);
-    std3D_GlowCopy(0, 0, STD3D_GLOW_W2, STD3D_GLOW_H2, GX_TF_RGB565, 0, std3D_pGlow2);
-
-    // Wider halo at 80x60.
-    GX_SetNumTevStages(1);
-    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
-    GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
-    GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
-    std3D_GlowQuad(0, 0, STD3D_GLOW_W3, STD3D_GLOW_H3, 0, 0, 0x000000FF);
-    std3D_GlowTevModulate();
-    GX_SetBlendMode(GX_BM_BLEND, GX_BL_ONE, GX_BL_ONE, GX_LO_CLEAR);
-    GX_LoadTexObj(&std3D_glow2Obj, GX_TEXMAP0);
-    std3D_GlowTaps(STD3D_GLOW_W3, STD3D_GLOW_H3, STD3D_GLOW_W2, STD3D_GLOW_H2);
-    std3D_GlowCopy(0, 0, STD3D_GLOW_W3, STD3D_GLOW_H3, GX_TF_RGB565, 0, std3D_pGlow3);
-
-    // Both halos summed at 160x120 (weights baked in) so only one full-screen
-    // pass is left: it and the scene copy are most of the glow's cost, and in
-    // busy places the extra full-screen pass made frames miss the 60 Hz vsync.
-    GXColor k1 = { 0xB0, 0xB0, 0xB0, 0xFF };
-    GX_SetNumTevStages(2);
-    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
-    GX_SetTevOp(GX_TEVSTAGE0, GX_MODULATE);
-    GX_SetTevKColor(GX_KCOLOR1, k1);
-    GX_SetTevKColorSel(GX_TEVSTAGE1, GX_TEV_KCSEL_K1);
-    // Its own texcoord: the hardware scales a texcoord by the size of the one
-    // texture it's bound to, so sharing TEXCOORD0 read the 80x60 halo as if it
-    // were 160x120 (shifted and twice as big).
-    GX_SetNumTexGens(2);
-    GX_SetTexCoordGen(GX_TEXCOORD1, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
-    GX_SetTevOrder(GX_TEVSTAGE1, GX_TEXCOORD1, GX_TEXMAP1, GX_COLORNULL);
-    GX_SetTevColorIn(GX_TEVSTAGE1, GX_CC_ZERO, GX_CC_TEXC, GX_CC_KONST, GX_CC_CPREV);
-    GX_SetTevColorOp(GX_TEVSTAGE1, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-    GX_SetTevAlphaIn(GX_TEVSTAGE1, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
-    GX_SetTevAlphaOp(GX_TEVSTAGE1, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-    GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
-    GX_LoadTexObj(&std3D_glow2Obj, GX_TEXMAP0);
-    GX_LoadTexObj(&std3D_glow3Obj, GX_TEXMAP1);
-    std3D_GlowQuad(0, 0, STD3D_GLOW_W2, STD3D_GLOW_H2, 0, 0, 0x909090FF);
-    std3D_GlowCopy(0, 0, STD3D_GLOW_W2, STD3D_GLOW_H2, GX_TF_RGB565, 0, std3D_pGlow2);
-    GX_SetNumTexGens(1);
-
-    // Corner back as it was.
-    GX_SetNumTevStages(1);
-    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
-    GX_SetTevOp(GX_TEVSTAGE0, GX_REPLACE);
-    GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
-    GX_LoadTexObj(&std3D_glowCornerObj, GX_TEXMAP0);
-    std3D_GlowQuad(0, 0, STD3D_GLOW_W2, STD3D_GLOW_H2, 0, 0, 0xFFFFFFFF);
-
-    // The halos over the screen.
-    std3D_GlowTevModulate();
-    GX_SetBlendMode(GX_BM_BLEND, GX_BL_ONE, GX_BL_ONE, GX_LO_CLEAR);
-    GX_LoadTexObj(&std3D_glow2Obj, GX_TEXMAP0);
-    std3D_GlowQuad(0, 0, STD3D_SCREEN_W, STD3D_SCREEN_H, 0, 0, 0xFFFFFFFF);
-
-    // Back to the scene's state for what follows.
-    std3D_SetSceneState();
 }
 
 // --- Underwater ripple ---------------------------------------------------------------
@@ -1125,7 +905,7 @@ static void std3D_DrawUnderwater(void)
         GX_InitTexObjFilterMode(&std3D_waterObj, GX_LINEAR, GX_LINEAR);
     }
     int W = gcSystem_pRmode->fbWidth, H = gcSystem_pRmode->efbHeight;
-    std3D_GlowCopy(0, 0, W, H, GX_TF_RGB565, 1, std3D_pWater);
+    std3D_EfbCopy(0, 0, W, H, GX_TF_RGB565, 1, std3D_pWater);
 
     std3D_LoadOrthoProjection();
     GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
@@ -1229,10 +1009,14 @@ int std3D_EndScene()
 {
     if (Main_bHeadless || !std3D_bInScene) return 0;
     std3D_FogOff(); // the overlays below are not part of the scene
+    // Added: the overlays (HUD, crosshair) from a known GX state, not what the
+    // scene's last batch left: in third person, once the sky came into view the
+    // whole HUD stopped showing (drawn, but not on screen) until it went away.
+    std3D_SetSceneState();
+    std3D_bFogBound = -1;
 
     if (std3D_bDrew3D && jkGame_isDDraw) {
         std3D_DrawUnderwater();
-        std3D_DrawGlow();
         std3D_DrawColorEffectAdd();
         std3D_bDrew3D = 0;
     }
@@ -1302,10 +1086,6 @@ static inline void std3D_EmitVertex(const D3DVERTEX* v, int keepAlpha)
     GX_TexCoord2f32(v->tu, v->tv);
 }
 
-// Depth marking translucent things over the sky for the glow (Z16 top bits under
-// 0xFFFF; see std3D_DrawRenderListReal).
-#define STD3D_DEPTH_MARK (1.0f - 1024.0f / 16777215.0f)
-
 static void std3D_EmitTris(rdTri* tris, D3DVERTEX* verts, size_t j, size_t end, int keepAlpha)
 {
     GX_Begin(GX_TRIANGLES, GX_VTXFMT0, (uint16_t)((end - j) * 3));
@@ -1327,7 +1107,6 @@ static void std3D_DrawRenderListReal(void)
 
     rdTri*     tris  = GL_tmpTris;
     D3DVERTEX* verts = GL_tmpVertices;
-    int bMarkSky = std3D_GcGetGlow() && !jkGuiBuildMulti_bRendering;
 
     // The scene's vertices carry a second colour, the fog amount (only here: the
     // overlays drawn with the same format don't send it).
@@ -1335,7 +1114,7 @@ static void std3D_DrawRenderListReal(void)
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR1, GX_CLR_RGBA, GX_RGBA8, 0);
     GX_SetNumChans(2);
     GX_SetChanCtrl(GX_COLOR1A1, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
-    std3D_bFogBound = -1; // the TEV stages may have been changed since (glow)
+    std3D_bFogBound = -1; // the TEV stages may have been changed since (underwater)
 
     size_t j = 0;
     while (j < GL_tmpTrisAmt)
@@ -1383,21 +1162,6 @@ static void std3D_DrawRenderListReal(void)
 
         int keepAlpha = blendClass != STD3D_BLEND_OPAQUE;
         std3D_EmitTris(tris, verts, j, end, keepAlpha);
-
-        // Added: translucent things (sabers, bolts, explosions) don't write depth,
-        // so over the sky the glow would take them for sky. Drawn again into depth
-        // only, at a marker just short of the far end, where the depth is still
-        // the sky's (GX_LESS: nothing real is that far).
-        if (bMarkSky && !bSky && blendClass != STD3D_BLEND_OPAQUE) {
-            GX_SetColorUpdate(GX_FALSE);
-            GX_SetZMode(GX_TRUE, GX_LESS, GX_TRUE);
-            GX_SetViewport(0, 0, gcSystem_pRmode->fbWidth, gcSystem_pRmode->efbHeight,
-                           STD3D_DEPTH_MARK, STD3D_DEPTH_MARK);
-            std3D_EmitTris(tris, verts, j, end, keepAlpha);
-            GX_SetColorUpdate(GX_TRUE);
-            GX_SetViewport(0, 0, gcSystem_pRmode->fbWidth, gcSystem_pRmode->efbHeight, 0, 1);
-            std3D_boundBlend = -1; // its Z mode
-        }
 
         j = end;
     }
@@ -1824,19 +1588,22 @@ int std3D_ClearZBuffer()
 
     std3D_LoadOrthoProjection();
     GX_SetColorUpdate(GX_FALSE);
-    GX_SetZMode(GX_TRUE, GX_ALWAYS, GX_TRUE);
+    // Not to the far end: to STD3D_POV_CLEAR_DEPTH, everywhere nearer than it
+    // (GREATER: the sky, at the far end, keeps its depth) -- see there.
+    GX_SetZMode(GX_TRUE, GX_GREATER, GX_TRUE);
     GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
     std3D_BindUntextured();
 
-    // Ortho maps z in [0,-1] -> [near, far]; -1 is the far plane. Opaque alpha:
-    // the alpha test (GREATER 0) runs before the depth write and dropped the
-    // whole quad with alpha 0, so the depth was never cleared and walls cut
-    // through the first-person weapon (the long bowcaster most visibly).
+    // Ortho maps z in [0,-1] -> [near, far] (depth = -z). Opaque alpha: the
+    // alpha test (GREATER 0) runs before the depth write and dropped the whole
+    // quad with alpha 0, so the depth was never cleared and walls cut through
+    // the first-person weapon (the long bowcaster most visibly).
+    const float z = -STD3D_POV_CLEAR_DEPTH;
     GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
-        GX_Position3f32(0.0f, 0.0f, -1.0f);     GX_Color1u32(0x000000FF); GX_TexCoord2f32(0, 0);
-        GX_Position3f32(640.0f, 0.0f, -1.0f);   GX_Color1u32(0x000000FF); GX_TexCoord2f32(0, 0);
-        GX_Position3f32(640.0f, 480.0f, -1.0f); GX_Color1u32(0x000000FF); GX_TexCoord2f32(0, 0);
-        GX_Position3f32(0.0f, 480.0f, -1.0f);   GX_Color1u32(0x000000FF); GX_TexCoord2f32(0, 0);
+        GX_Position3f32(0.0f, 0.0f, z);     GX_Color1u32(0x000000FF); GX_TexCoord2f32(0, 0);
+        GX_Position3f32(640.0f, 0.0f, z);   GX_Color1u32(0x000000FF); GX_TexCoord2f32(0, 0);
+        GX_Position3f32(640.0f, 480.0f, z); GX_Color1u32(0x000000FF); GX_TexCoord2f32(0, 0);
+        GX_Position3f32(0.0f, 480.0f, z);   GX_Color1u32(0x000000FF); GX_TexCoord2f32(0, 0);
     GX_End();
 
     GX_SetColorUpdate(GX_TRUE);

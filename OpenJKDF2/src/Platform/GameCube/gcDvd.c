@@ -19,7 +19,6 @@
 
 #include "gcDvd.h"
 #include "gcGame.h"
-#include "gcExfat.h"
 #include "gcSystem.h"
 #include "gcAram.h"
 
@@ -29,7 +28,7 @@
 #include <ogc/lwp_watchdog.h>
 #include <sys/dirent.h>
 #include <dirent.h>
-#include <fat.h>
+#include <dvm.h>
 #include <sdcard/gcsd.h>
 #include <sdcard/card_cmn.h>
 #include <sdcard/card_io.h>
@@ -43,6 +42,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+#define DVD_ReadPrio(block, buf, len, offset, prio) DVD_ReadAbsPrio(block, buf, len, offset, prio)
 
 #define GCDVD_MAX_PATH 256
 
@@ -166,9 +167,11 @@ static inline const char* gcDvd_Name(uint32_t idx)
 
 // The "disc" is either the real drive or, when booted from an SD card through
 // Swiss, the disc image file itself (Swiss's DVD emulation only hooks the official
-// SDK's drive routines, not libogc's). The image lives on a FAT card (libfat) or an
-// exFAT one (gcExfat). The main and music threads share it under a mutex.
-enum { GCDVD_SRC_DRIVE, GCDVD_SRC_FAT, GCDVD_SRC_EXFAT };
+// SDK's drive routines, not libogc's). The card is mounted with libdvm, FAT or
+// exFAT alike, and the image is read as a file. The main and music threads
+// share it under a
+// mutex.
+enum { GCDVD_SRC_DRIVE, GCDVD_SRC_SD };
 static int     gcDvd_source = GCDVD_SRC_DRIVE;
 static FILE*   gcDvd_pImage = NULL;
 static char    gcDvd_imagePath[256] = "";
@@ -181,9 +184,7 @@ static char    gcDvd_szSdSpeed[96] = "not measured";
 const char* gcDvd_GetSdInfo(char* buf, int len)
 {
     if (gcDvd_source == GCDVD_SRC_DRIVE) return NULL;
-    snprintf(buf, len, "Game image: %s (%s)\nSD speed:   %s\n", gcDvd_imagePath,
-             gcDvd_source == GCDVD_SRC_EXFAT ? "exFAT" : "FAT",
-             gcDvd_source == GCDVD_SRC_EXFAT ? gcDvd_szSdSpeed : "not measured on FAT");
+    snprintf(buf, len, "Game image: %s\nSD speed:   %s\n", gcDvd_imagePath, gcDvd_szSdSpeed);
     return buf;
 }
 
@@ -199,37 +200,37 @@ void gcDvd_ResumeReads(void)
 
 volatile uint32_t gcDvd_statReadErrors = 0; // SD read errors (each retry counts)
 
+static int gcDvd_ReadFile(void* dst, uint32_t len, int64_t offset)
+{
+    clearerr(gcDvd_pImage);
+    int ok = !fseeko(gcDvd_pImage, (off_t)offset, SEEK_SET);
+    size_t got = ok ? fread(dst, 1, len, gcDvd_pImage) : 0;
+    // Reads are rounded up for the drive; past the end of the image is just zeroes.
+    if (got < len) memset((uint8_t*)dst + got, 0, len - got);
+    return ok && (got > 0 || len == 0) && !ferror(gcDvd_pImage);
+}
+
 static int gcDvd_ReadImage(void* dst, uint32_t len, int64_t offset)
 {
-    int ok;
     LWP_MutexLock(gcDvd_imageMutex);
-    if (gcDvd_source == GCDVD_SRC_EXFAT) {
-        ok = gcExfat_Read(dst, len, offset);
-        if (!ok && gcDvd_bSdFast) {
-            // Not every card copes with 32 MHz for long; drop back and retry.
-            gcDvd_bSdFast = 0;
-            sdgecko_setSpeed(gcDvd_sdDrive, EXI_SPEED16MHZ);
-            printf("gcDvd: SD read error at 32 MHz, back to 16 MHz\n");
-            ok = gcExfat_Read(dst, len, offset);
-        }
-        // Added: a failed read used to end up as an early end of file in the
-        // engine (a level failing to parse at a valid line, a bitmap not loading).
-        // Transient SD errors happen: give the card a moment and try again.
-        for (int attempt = 0; !ok && attempt < 4; attempt++) {
-            gcDvd_statReadErrors++;
-            printf("gcDvd: SD read error at 0x%llx (+%u), retrying\n", (long long)offset, len);
-            usleep(20 * 1000);
-            ok = gcExfat_Read(dst, len, offset);
-        }
-        if (!ok) gcDvd_statReadErrors++;
+    int ok = gcDvd_ReadFile(dst, len, offset);
+    if (!ok && gcDvd_bSdFast) {
+        // Not every card copes with 32 MHz for long; drop back and retry.
+        gcDvd_bSdFast = 0;
+        sdgecko_setSpeed(gcDvd_sdDrive, EXI_SPEED16MHZ);
+        printf("gcDvd: SD read error at 32 MHz, back to 16 MHz\n");
+        ok = gcDvd_ReadFile(dst, len, offset);
     }
-    else {
-        ok = !fseek(gcDvd_pImage, (long)offset, SEEK_SET);
-        size_t got = ok ? fread(dst, 1, len, gcDvd_pImage) : 0;
-        // Reads are rounded up for the drive; past the end of the image is just zeroes.
-        if (got < len) memset((uint8_t*)dst + got, 0, len - got);
-        ok = ok && (got > 0 || len == 0);
+    // A failed read used to end up as an early end of file in the engine (a
+    // level failing to parse at a valid line, a bitmap not loading). Transient
+    // SD errors happen: give the card a moment and try again.
+    for (int attempt = 0; !ok && attempt < 4; attempt++) {
+        gcDvd_statReadErrors++;
+        printf("gcDvd: SD read error at 0x%llx (+%u), retrying\n", (long long)offset, len);
+        usleep(20 * 1000);
+        ok = gcDvd_ReadFile(dst, len, offset);
     }
+    if (!ok) gcDvd_statReadErrors++;
     LWP_MutexUnlock(gcDvd_imageMutex);
     return ok;
 }
@@ -280,7 +281,8 @@ static void gcDvd_AramDma(u32 dir, void* mem, u32 aram, u32 len)
 static mutex_t           gcDvd_l2Mutex = LWP_MUTEX_NULL;   // gcDvd_aL2 + use counter
 static sem_t             gcDvd_prefetchSem;
 static lwp_t             gcDvd_prefetchThread = LWP_THREAD_NULL;
-static uint8_t           gcDvd_prefetchStack[16 * 1024] __attribute__((aligned(32)));
+// (64 KiB: on an SD card its reads go through libdvm and exFAT -- see gcMusic.c.)
+static uint8_t           gcDvd_prefetchStack[64 * 1024] __attribute__((aligned(32)));
 static uint8_t*          gcDvd_pPrefetchStaging = NULL;
 static dvdcmdblk         gcDvd_prefetchCmd;
 static volatile int64_t  gcDvd_prefetchFrom = -1;   // first slice wanted ahead
@@ -894,11 +896,17 @@ static void gcDvd_FillFstStat(uint32_t idx, struct stat* st)
 
 static gcOvNode* gcDvd_pFailedNode = NULL; // see gcDvd_GcTakeWriteFailure
 
+// The files' memory comes from gcHeap's file arena (see gcHeap_FileAlloc): kept
+// apart from the levels' data, which it used to split up.
+void* gcHeap_FileAlloc(size_t n);
+void* gcHeap_FileRealloc(void* p, size_t n);
+void  gcHeap_FileFree(void* p);
+
 static void gcOv_FreeData(gcOvNode* n)
 {
     for (uint32_t i = 0; i < n->numChunks; i++)
-        free(n->chunks[i]);
-    free(n->chunks);
+        gcHeap_FileFree(n->chunks[i]);
+    gcHeap_FileFree(n->chunks);
     n->chunks = NULL;
     n->numChunks = 0;
     n->lastCap = 0;
@@ -914,8 +922,9 @@ static gcOvNode* gcOv_Find(const char* norm)
 
 static gcOvNode* gcOv_Create(const char* norm, int isDir)
 {
-    gcOvNode* n = (gcOvNode*)calloc(1, sizeof(gcOvNode));
+    gcOvNode* n = (gcOvNode*)gcHeap_FileAlloc(sizeof(gcOvNode));
     if (!n) return NULL;
+    memset(n, 0, sizeof(*n));
     strncpy(n->path, norm, sizeof(n->path) - 1);
     n->isDir = isDir;
     // Append, so parents always precede their children (serialization relies on it).
@@ -933,7 +942,7 @@ static void gcOv_Remove(gcOvNode* node)
         if (prev) prev->next = n->next; else gcOv_pHead = n->next;
         if (gcOv_pTail == n) gcOv_pTail = prev;
         gcOv_FreeData(n);
-        free(n);
+        gcHeap_FileFree(n);
         return;
     }
 }
@@ -948,7 +957,7 @@ static int gcOv_Reserve(gcOvNode* n, uint32_t size)
             uint32_t nc = n->lastCap * 2;
             while (nc < n->lastCap + want && nc < GCDVD_DATA_CHUNK) nc *= 2;
             if (nc > GCDVD_DATA_CHUNK) nc = GCDVD_DATA_CHUNK;
-            uint8_t* c = (uint8_t*)realloc(n->chunks[n->numChunks - 1], nc);
+            uint8_t* c = (uint8_t*)gcHeap_FileRealloc(n->chunks[n->numChunks - 1], nc);
             if (!c) return 0;
             n->chunks[n->numChunks - 1] = c;
             n->cap += nc - n->lastCap;
@@ -957,10 +966,10 @@ static int gcOv_Reserve(gcOvNode* n, uint32_t size)
         else {
             uint32_t nc = 1024;
             while (nc < want && nc < GCDVD_DATA_CHUNK) nc *= 2;
-            uint8_t** arr = (uint8_t**)realloc(n->chunks, (n->numChunks + 1) * sizeof(uint8_t*));
+            uint8_t** arr = (uint8_t**)gcHeap_FileRealloc(n->chunks, (n->numChunks + 1) * sizeof(uint8_t*));
             if (!arr) return 0;
             n->chunks = arr;
-            uint8_t* c = (uint8_t*)malloc(nc);
+            uint8_t* c = (uint8_t*)gcHeap_FileAlloc(nc);
             if (!c) return 0;
             n->chunks[n->numChunks++] = c;
             n->cap += nc;
@@ -1715,8 +1724,10 @@ static int gcDvd_IsOurImage(const char* path)
     return ok;
 }
 
-// Look for the image in a directory and (depth > 0) its subdirectories.
-static int gcDvd_ScanForImage(const char* dir, int depth)
+// Look for the image in a directory and (depth > 0) its subdirectories. With
+// bNamed, only files named openjk* are opened: every image checked is a file
+// opened on the card, and a card full of games took seconds (6 s on hardware).
+static int gcDvd_ScanForImage(const char* dir, int depth, int bNamed)
 {
     DIR* d = opendir(dir);
     if (!d) return 0;
@@ -1726,7 +1737,8 @@ static int gcDvd_ScanForImage(const char* dir, int depth)
     {
         if (ent->d_name[0] == '.') continue;
         char path[256];
-        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+        if (snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name) >= (int)sizeof(path))
+            continue; // too deep a path to open later anyway
         const char* ext = strrchr(ent->d_name, '.');
         int isDir = ent->d_type == DT_DIR;
         if (ent->d_type == DT_UNKNOWN) { // not every FAT driver fills d_type in
@@ -1734,9 +1746,10 @@ static int gcDvd_ScanForImage(const char* dir, int depth)
             isDir = !stat(path, &st) && S_ISDIR(st.st_mode);
         }
         if (isDir) {
-            if (depth > 0) found = gcDvd_ScanForImage(path, depth - 1);
+            if (depth > 0) found = gcDvd_ScanForImage(path, depth - 1, bNamed);
         }
         else if (ext && (!strcasecmp(ext, ".iso") || !strcasecmp(ext, ".gcm"))
+                 && (!bNamed || !strncasecmp(ent->d_name, "openjk", 6))
                  && gcDvd_IsOurImage(path)) {
             strncpy(gcDvd_imagePath, path, sizeof(gcDvd_imagePath) - 1);
             found = 1;
@@ -1748,8 +1761,20 @@ static int gcDvd_ScanForImage(const char* dir, int depth)
 
 static void gcDvd_TuneSdSpeed(void);
 
+// libdvm with the FAT and exFAT drivers of libogc2's libfat, registered here
+// rather than through dvmInit: that one also mounts a GC Loader as "dvd", the
+// name this file uses for the disc.
+extern const DvmFsDriver g_vfatFsDriver, g_exfatFsDriver;
+extern unsigned g_dvmDefaultCachePages, g_dvmDefaultSectorsPerPage;
+
 static int gcDvd_FindImageOnSd(void)
 {
+    static int bDrivers = 0;
+    if (!bDrivers) {
+        bDrivers = 1;
+        dvmRegisterFsDriver(&g_vfatFsDriver);
+        dvmRegisterFsDriver(&g_exfatFsDriver);
+    }
     // SD2SP2 (serial port 2), then SD Gecko style adapters in slot B and slot A.
     static const DISC_INTERFACE* const aIfaces[] = { &__io_gcsd2, &__io_gcsdb, &__io_gcsda };
     static const char* const aNames[] = { "SD2SP2", "slot B", "slot A" };
@@ -1762,25 +1787,39 @@ static int gcDvd_FindImageOnSd(void)
             printf("gcDvd: %s holds a memory card\n", aNames[i]);
             continue;
         }
+        // Nor to a network adapter (libogc2 looks for those in these slots too):
+        // WIZnet W5500/W6100 and W6300 (ETH2GC and the like), Broadband Adapter.
+        // (ENC28J60 adapters answer an ID command of their own, not this one.)
+        if (aCardChan[i] >= 0) {
+            u32 id = 0;
+            if (EXI_GetID(aCardChan[i], EXI_DEVICE_0, &id)
+                && (id == 0x03000000 || id == 0xFF800000 || id == 0x04020200)) {
+                printf("gcDvd: %s holds a network adapter (EXI id 0x%08x)\n", aNames[i], (unsigned)id);
+                continue;
+            }
+        }
         printf("gcDvd: looking for an SD card in %s...\n", aNames[i]);
-        if (fatMountSimple("sd", aIfaces[i])) {
-            printf("gcDvd: FAT SD card found, searching for openjkdf2.iso\n");
+        unsigned numVolumes = dvmProbeMountDiscIface("sd", (DISC_INTERFACE*)aIfaces[i],
+                                                     g_dvmDefaultCachePages, g_dvmDefaultSectorsPerPage);
+        if (numVolumes) {
+            printf("gcDvd: SD card mounted (%u volume%s), searching for openjkdf2.iso\n",
+                   numVolumes, numVolumes == 1 ? "" : "s");
             if (gcDvd_IsOurImage("sd:/openjkdf2.iso"))
                 strcpy(gcDvd_imagePath, "sd:/openjkdf2.iso");
-            if (gcDvd_imagePath[0] || gcDvd_ScanForImage("sd:/games", 2) || gcDvd_ScanForImage("sd:", 0)) {
+            // The usual places and names first, then any image anywhere.
+            if (gcDvd_imagePath[0]
+                || gcDvd_ScanForImage("sd:", 0, 1) || gcDvd_ScanForImage("sd:/games", 2, 1)
+                || gcDvd_ScanForImage("sd:", 0, 0) || gcDvd_ScanForImage("sd:/games", 2, 0)) {
                 gcDvd_pImage = fopen(gcDvd_imagePath, "rb");
                 if (gcDvd_pImage) {
-                    gcDvd_source = GCDVD_SRC_FAT;
+                    printf("gcDvd: game image %s\n", gcDvd_imagePath);
+                    gcDvd_source = GCDVD_SRC_SD;
+                    gcDvd_sdDrive = aSdDrive[i];
+                    gcDvd_TuneSdSpeed();
                     return 1;
                 }
             }
-            fatUnmount("sd:/");
-        }
-        else if (gcExfat_FindImage(aIfaces[i], GCDVD_DISC_ID, gcDvd_imagePath, sizeof(gcDvd_imagePath))) {
-            gcDvd_source = GCDVD_SRC_EXFAT;
-            gcDvd_sdDrive = aSdDrive[i];
-            gcDvd_TuneSdSpeed();
-            return 1;
+            dvmUnmountVolume("sd");
         }
         printf("gcDvd: no disc image found in %s\n", aNames[i]);
         gcDvd_imagePath[0] = 0;
@@ -1829,45 +1868,64 @@ static void gcDvd_TuneSdSpeed(void)
 }
 
 // DVD_Mount blocks forever without a disc; give the drive a bounded time instead.
-static int gcDvd_MountDrive(void)
+// Waits up to timeoutMs for the drive. A mount still in progress when a wait gave
+// up is waited on again by the next call (never issued twice: its command block is
+// still the drive's).
+int gcDvd_UsesSerialPort2(void)
+{
+    return gcDvd_source == GCDVD_SRC_SD && gcDvd_sdDrive == 2;
+}
+
+static int gcDvd_MountDrive(uint32_t timeoutMs)
 {
     static dvdcmdblk mountBlock;
+    static int bInit = 0, bPending = 0;
     printf("gcDvd: waiting for the disc drive...\n");
-    DVD_Init();
-    if (DVD_MountAsync(&mountBlock, NULL) < 0) return 0;
+    if (!bInit) {
+        bInit = 1;
+        DVD_Init();
+    }
+    if (!bPending) {
+        if (DVD_MountAsync(&mountBlock, NULL) < 0) return 0;
+        bPending = 1;
+    }
     u64 start = gettime();
     while (DVD_GetCmdBlockStatus(&mountBlock) == DVD_STATE_BUSY
            || DVD_GetCmdBlockStatus(&mountBlock) == DVD_STATE_WAITING) {
-        if (diff_msec(start, gettime()) > GCDVD_MOUNT_TIMEOUT_MS) {
-            printf("gcDvd: no disc in the drive\n");
+        if (diff_msec(start, gettime()) > timeoutMs) {
+            printf("gcDvd: no disc in the drive (yet)\n");
             return 0;
         }
         usleep(10 * 1000);
     }
+    bPending = 0;
     return DVD_GetCmdBlockStatus(&mountBlock) == DVD_STATE_END;
 }
 
-// --- Mount ---------------------------------------------------------------------------
 
-int gcDvd_Mount(void)
+// The file table: through the drive, when booted from our own disc, the copy the
+// loader left in memory (low memory 0x38: its address, 0x3C: its size), as the
+// IPL/apploader or Swiss loaded it -- what games use; otherwise (or if it doesn't
+// look right) from the disc. (Started by any other loader, what is in low memory
+// belongs to whatever it loaded last, not to the disc in the drive.)
+static int gcDvd_LoadFst(int bLoaderFst)
 {
-    if (gcDvd_bMounted) return 1;
-
-    LWP_MutexInit(&gcDvd_imageMutex, false);
-    if (gcDvd_FindImageOnSd())
-        printf("gcDvd: reading the game from %s\n", gcDvd_imagePath);
-    else if (!gcDvd_MountDrive()) {
-        printf("gcDvd: no game disc and no disc image on an SD card\n");
-        return 0;
+    if (gcDvd_source == GCDVD_SRC_DRIVE && bLoaderFst) {
+        const gcDvdFstEntry* ramFst = *(const gcDvdFstEntry* const*)0x80000038;
+        uint32_t ramFstSize = *(const uint32_t*)0x8000003C;
+        uint32_t ramFstAddr = (uint32_t)ramFst;
+        if (ramFstAddr >= 0x80003100 && ramFstAddr + ramFstSize <= 0x81800000
+            && ramFstSize >= 24 && ramFstSize < 4 * 1024 * 1024
+            && (ramFst[0].typeName >> 24) == 1 && ramFst[0].length > 1
+            && ramFst[0].length * sizeof(gcDvdFstEntry) < ramFstSize) {
+            gcDvd_pFst = (gcDvdFstEntry*)memalign(32, (ramFstSize + 31) & ~31u);
+            if (gcDvd_pFst) {
+                memcpy(gcDvd_pFst, ramFst, ramFstSize);
+                printf("gcDvd: file table from the loader (%u entries)\n", (unsigned)ramFst[0].length);
+                return 1;
+            }
+        }
     }
-
-    for (int i = 0; i < GCDVD_NUM_BLOCKS; i++) {
-        gcDvd_aBlocks[i].data = (uint8_t*)memalign(32, GCDVD_BLOCK_SIZE);
-        gcDvd_aBlocks[i].offset = -1;
-        gcDvd_aBlocks[i].lastUse = 0;
-        if (!gcDvd_aBlocks[i].data) return 0;
-    }
-
     uint8_t* hdr = (uint8_t*)memalign(32, 0x40);
     if (!hdr) return 0;
     if (!gcDvd_ReadRaw(hdr, 0x40, 0x420)) {
@@ -1878,12 +1936,102 @@ int gcDvd_Mount(void)
     uint32_t fstOffset = *(uint32_t*)(hdr + 0x04);
     uint32_t fstSize   = *(uint32_t*)(hdr + 0x08);
     free(hdr);
-
     uint32_t fstAlloc = (fstSize + 31) & ~31u;
     gcDvd_pFst = (gcDvdFstEntry*)memalign(32, fstAlloc);
     if (!gcDvd_pFst || !gcDvd_ReadRaw(gcDvd_pFst, fstAlloc, fstOffset)) {
         printf("gcDvd: failed to read the FST (off 0x%x size 0x%x)\n", fstOffset, fstSize);
+        free(gcDvd_pFst);
+        gcDvd_pFst = NULL;
         return 0;
+    }
+    return 1;
+}
+
+// Does the drive give the game's data? Every GOB (.gob, .goo) starts with "GOB ": the first one
+// and the one furthest into the disc, read through the drive, must say so. (Swiss
+// still serves the first megabytes of an image it booted from SD -- the first GOB
+// sits there -- and only zeros past them.)
+static int gcDvd_DriveReadsOk(void)
+{
+    uint32_t count = gcDvd_pFst[0].length;
+    const char* strings = (const char*)&gcDvd_pFst[count];
+    uint32_t first = 0, last = 0;
+    for (uint32_t i = 1; i < count; i++) {
+        if (gcDvd_pFst[i].typeName >> 24) continue;
+        const char* name = strings + (gcDvd_pFst[i].typeName & 0xFFFFFF);
+        size_t n = strlen(name);
+        // (Mysteries of the Sith's are .goo: GOBs all the same.)
+        if (n < 4 || (strcasecmp(name + n - 4, ".gob") && strcasecmp(name + n - 4, ".goo"))
+            || gcDvd_pFst[i].length < 32) continue;
+        if (!first) first = i;
+        if (!last || gcDvd_pFst[i].offset > gcDvd_pFst[last].offset) last = i;
+    }
+    if (!first) return 0;
+    uint8_t* buf = (uint8_t*)memalign(32, 32);
+    if (!buf) return 0;
+    int ok = 1;
+    uint32_t aCheck[2] = { first, last };
+    for (int k = 0; k < 2 && ok && (k == 0 || last != first); k++) {
+        uint32_t off = gcDvd_pFst[aCheck[k]].offset;
+        DCInvalidateRange(buf, 32);
+        ok = DVD_ReadPrio(&gcDvd_cmd, buf, 32, off & ~31u, 2) >= 0
+          && (off & 31) <= 28 && !memcmp(buf + (off & 31), "GOB ", 4);
+        printf("gcDvd: drive check (%s at 0x%x): %s\n", strings + (gcDvd_pFst[aCheck[k]].typeName & 0xFFFFFF),
+               (unsigned)off, ok ? "ok" : "wrong data");
+    }
+    free(buf);
+    return ok;
+}
+
+// --- Mount ---------------------------------------------------------------------------
+
+int gcDvd_Mount(void)
+{
+    if (gcDvd_bMounted) return 1;
+
+    LWP_MutexInit(&gcDvd_imageMutex, false);
+    for (int i = 0; i < GCDVD_NUM_BLOCKS; i++) {
+        gcDvd_aBlocks[i].data = (uint8_t*)memalign(32, GCDVD_BLOCK_SIZE);
+        gcDvd_aBlocks[i].offset = -1;
+        gcDvd_aBlocks[i].lastUse = 0;
+        if (!gcDvd_aBlocks[i].data) return 0;
+    }
+
+    // Booted from one of our images: a real disc, or an optical drive emulator
+    // (GC Loader, FlippyDrive -- booted by the IPL, cubeboot...): read the disc.
+    // Swiss booting the image from an SD card doesn't emulate the drive for a
+    // homebrew program past what it read to boot it (hardware, 2026-10-20: every
+    // read past the first megabytes came back as zeros) -- so the drive is checked,
+    // and the image on the SD card read instead when it fails.
+    const char* bootId = (const char*)0x80000000;
+    int bOurDisc = !memcmp(bootId, "OJKEOJ", 6) || !memcmp(bootId, "OJMEOJ", 6);
+    int bDrive = 0, bDriveBad = 0;
+    if (bOurDisc && gcDvd_MountDrive(5000)) {
+        if (gcDvd_LoadFst(1) && gcDvd_DriveReadsOk()) {
+            bDrive = 1;
+            printf("gcDvd: reading the game through the disc drive\n");
+        }
+        else {
+            printf("gcDvd: the disc drive doesn't give the game's data (Swiss?): trying the SD card\n");
+            free(gcDvd_pFst);
+            gcDvd_pFst = NULL;
+            bDriveBad = 1;
+        }
+    }
+    if (!bDrive) {
+        if (gcDvd_FindImageOnSd()) {
+            printf("gcDvd: reading the game from %s\n", gcDvd_imagePath);
+            if (!gcDvd_LoadFst(0)) return 0;
+        }
+        else {
+            // No image on an SD card: the drive, given the full time (a real disc can
+            // take longer than 5 s to spin up) -- unless it already gave wrong data.
+            if (bDriveBad || !gcDvd_MountDrive(GCDVD_MOUNT_TIMEOUT_MS)) {
+                printf("gcDvd: no game disc and no disc image on an SD card\n");
+                return 0;
+            }
+            if (!gcDvd_LoadFst(bOurDisc) || (bOurDisc && !gcDvd_DriveReadsOk())) return 0;
+        }
     }
 
     gcDvd_numEntries = gcDvd_pFst[0].length;
@@ -1896,6 +2044,8 @@ int gcDvd_Mount(void)
         uint32_t end = gcDvd_pFst[i].offset + gcDvd_pFst[i].length;
         if (end > gcDvd_discEnd) gcDvd_discEnd = end;
     }
+
+
 
     // ARAM read cache.
     printf("gcDvd: disc filesystem ok (%u entries), setting up ARAM\n", gcDvd_numEntries);

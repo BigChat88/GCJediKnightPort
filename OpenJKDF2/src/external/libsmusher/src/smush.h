@@ -107,8 +107,10 @@ typedef struct smush_ctx
 
     codec48_ctx* c48_ctx;
     codec47_ctx* c47_ctx;
-    uint8_t* framebuffer;
+    uint8_t* framebuffer;      // Added: allocated on first use (smush_framebuffer)
     uint8_t* framebuffer_stor;
+    uint8_t* video;            // Added: the frame to show when a codec's own buffer holds it
+    uint32_t video_size;       // Added: its size in bytes
     int store_next;
     uint32_t store_param;
 
@@ -157,8 +159,13 @@ typedef struct smush_ctx
 // Added: called when an allocation fails, so the host can free caches; the
 // allocation is then retried once.
 extern void (*smush_low_memory_hook)(uint32_t size);
+// Added: tried when malloc still fails; its blocks must be freeable with free().
+extern void* (*smush_alloc_fallback)(uint32_t size);
 extern int smush_alloc_failed; // an allocation failed even after the hook (video can't play)
+extern uint32_t smush_failed_size; // the size of that allocation
 void* smush_alloc(uint32_t size);
+// Added: the 640x480 frame buffer, allocated (zeroed) on first use; NULL without memory.
+uint8_t* smush_framebuffer(smush_ctx* ctx);
 
 smush_ctx* smush_from_fpath(const char* fpath);
 void smush_set_debug(smush_ctx* ctx, int val);

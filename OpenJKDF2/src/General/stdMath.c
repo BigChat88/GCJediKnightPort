@@ -639,36 +639,21 @@ flex_t stdMath_Tan(flex_t angle)
     flex_t a1a; // [esp+10h] [ebp-1Ch]
     int32_t v5; // [esp+14h] [ebp-18h]
     flex_t v6; // [esp+18h] [ebp-14h]
-    flex_t v7; // [esp+18h] [ebp-14h]
     int32_t v8; // [esp+1Ch] [ebp-10h]
     flex_t v9; // [esp+20h] [ebp-Ch]
     int32_t v10; // [esp+24h] [ebp-8h]
     flex_t v11; // [esp+28h] [ebp-4h]
     flex_t v12; // [esp+28h] [ebp-4h]
-    flex_t v13; // [esp+28h] [ebp-4h]
-    flex_t v14; // [esp+28h] [ebp-4h]
     flex_t v15; // [esp+34h] [ebp+8h]
 
     v1 = stdMath_NormalizeAngle(angle);
     v15 = v1;
-    if ( v1 >= 90.0 )
-    {
-        if ( v15 >= 180.0 )
-        {
-            if ( v15 >= 270.0 )
-                v5 = 3;
-            else
-                v5 = 2;
-        }
-        else
-        {
-            v5 = 1;
-        }
-    }
-    else
-    {
-        v5 = 0;
-    }
+    // Added: tan has a period of 180 degrees, so only the 0..90 and 90..180
+    // quadrants are needed. (The original's 180..270 branch read aTanTable[-4096..-1],
+    // before the table, and mirrored the wrong way.)
+    if ( v15 >= 180.0 )
+        v15 -= 180.0;
+    v5 = v15 >= 90.0 ? 1 : 0;
     a1a = v15 / 360.0 * 16384.0;
     v3 = a1a - stdMath_Floor(a1a);
     v8 = (__int64)a1a;
@@ -689,21 +674,6 @@ flex_t stdMath_Tan(flex_t angle)
                 v12 = aTanTable[v10 - 0x2000];
             v6 = -aTanTable[0xFFF - (v8 - 0x1000)];
             v9 = (v12 - v6) * v3 + v6;
-            break;
-        case 2:
-            if ( v10 < 0x3000 )
-                v13 = aTanTable[v10 - 0x3000];
-            else
-                v13 = -aTanTable[0xFFF - (v8 - 0x2FFF)];
-            v9 = (v13 - aTanTable[0xFFF - (v8 - 0x2000)]) * v3 + aTanTable[0xFFF - (v8 - 0x2000)];
-            break;
-        case 3:
-            if ( v10 < 0x4000 )
-                v14 = -aTanTable[0xFFF - (v8 - 0x2FFF)];
-            else
-                v14 = aTanTable[v10 - 0x4000];
-            v7 = -aTanTable[0xFFF - (v8 - 0x3000)];
-            v9 = (v14 - v7) * v3 + v7;
             break;
         default:
             v9 = 0.0; // added

@@ -34,7 +34,7 @@ macro(plat_initialize)
     if(DEFINED ENV{GC_TRACE} AND NOT "$ENV{GC_TRACE}" STREQUAL "")
         add_compile_definitions(GC_TRACE)
         add_compile_options(-finstrument-functions
-            -finstrument-functions-exclude-file-list=/opt/devkitpro,Platform/GameCube)  # (GameCube2 too: same prefix)
+            -finstrument-functions-exclude-file-list=/opt/devkitpro,Platform/GameCube)
         message(STATUS "GC: call-stack tracing enabled")
     endif()
 
@@ -56,6 +56,11 @@ macro(plat_initialize)
     if(DEFINED ENV{GC_MEM_TRACK} AND NOT "$ENV{GC_MEM_TRACK}" STREQUAL "")
         add_compile_definitions(STDPLATFORM_ALLOC_TRACKING GC_MEM_TRACK)
         message(STATUS "GC: memory tracking enabled")
+    endif()
+    # Optional: load this memory card save slot when the main menu first shows
+    # (reproducing a player's save), e.g. GC_AUTOLOAD_SLOT=2.
+    if(DEFINED ENV{GC_AUTOLOAD_SLOT} AND NOT "$ENV{GC_AUTOLOAD_SLOT}" STREQUAL "")
+        add_compile_definitions(GC_AUTOLOAD_SLOT=$ENV{GC_AUTOLOAD_SLOT})
     endif()
     # Optional: memory panel under the frame rate (diagnostic ISOs), GC_MEMHUD=1.
     if(DEFINED ENV{GC_MEMHUD} AND NOT "$ENV{GC_MEMHUD}" STREQUAL "")
@@ -89,43 +94,27 @@ macro(plat_initialize)
     add_definitions(-DTARGET_RETRO_HOMEBREW)
     add_definitions(-D_DEFAULT_SOURCE)
 
-    # Same feature set as the other console ports: no SDL2, no desktop GL, no
-    # sockets, software video codecs, POSIX filesystem (newlib devoptabs), no blobs.
-    set(TARGET_USE_PHYSFS FALSE)
-    set(TARGET_USE_GAMENETWORKINGSOCKETS FALSE)
-    set(TARGET_USE_GCSOCKETS TRUE) # multiplayer over the Broadband Adapter
+    # No SDL2, no desktop GL: software video codecs, POSIX filesystem (newlib
+    # devoptabs), no blobs, multiplayer over the network adapter.
+    set(TARGET_USE_GCSOCKETS TRUE)
     set(TARGET_USE_LIBSMACKER TRUE)
     set(TARGET_USE_LIBSMUSHER TRUE)
-    set(TARGET_USE_SDL2 FALSE)
-    set(TARGET_USE_OPENGL FALSE)
-    set(TARGET_USE_OPENGL11 FALSE)
-    set(TARGET_USE_OPENAL FALSE)
     set(TARGET_POSIX TRUE)
     set(TARGET_NO_BLOBS TRUE)
-    set(TARGET_CAN_JKGM FALSE)
-    set(OPENJKDF2_NO_ASAN TRUE)
-    set(TARGET_USE_CURL FALSE)
-    set(TARGET_FIND_OPENAL FALSE)
     set(TARGET_NO_MULTIPLAYER_MENUS FALSE)
-
-    set(TARGET_BUILD_TESTS FALSE)
-    set(SDL2_COMMON_LIBS "")
-
     set(TARGET_GAMECUBE TRUE)
 
-    # Two platform cores: src/Platform/GameCube on devkitPro's libogc (the stable
-    # one, released), and src/Platform/GameCube2 on libogc2 (Extrems' fork, built
-    # with packaging/gamecube/Dockerfile.libogc2), where the port is being moved
-    # over to what libogc2 provides. Picked by the OGC library the toolchain uses;
-    # the engine includes the core's headers by name (gcDvd.h, ...).
-    if("${DKP_OGC_PLATFORM_LIBRARY}" STREQUAL "libogc2")
-        set(GC_CORE_DIR GameCube2)
-        add_compile_definitions(GC_LIBOGC2)
-    else()
-        set(GC_CORE_DIR GameCube)
+    # The port (src/Platform/GameCube) is built on libogc2, Extrems' fork of libogc
+    # (packaging/gamecube/Dockerfile): SD cards through libdvm (FAT and exFAT), more
+    # network adapters, libogc2's dlmalloc. The engine includes the platform's
+    # headers by name (gcDvd.h, ...).
+    if(NOT "${DKP_OGC_PLATFORM_LIBRARY}" STREQUAL "libogc2")
+        message(FATAL_ERROR "The GameCube port needs libogc2 (DKP_OGC_PLATFORM_LIBRARY is "
+                            "'${DKP_OGC_PLATFORM_LIBRARY}'): build with the image from packaging/gamecube/Dockerfile.")
     endif()
-    include_directories(${PROJECT_SOURCE_DIR}/src/Platform/${GC_CORE_DIR})
-    message(STATUS "GC: platform core src/Platform/${GC_CORE_DIR}")
+    # Our crash screen (gcCrash.c) in place of libogc2's.
+    add_link_options(-Wl,--wrap=c_default_exceptionhandler)
+    include_directories(${PROJECT_SOURCE_DIR}/src/Platform/GameCube)
 
     # GameCube.cmake already injects -mogc -mcpu=750 -meabi -mhard-float.
     add_compile_options(-Wall -Wno-unused-variable -Wno-parentheses -Wno-missing-braces)
@@ -138,17 +127,10 @@ macro(plat_initialize)
     add_link_options(-Wl,--gc-sections)
 endmacro()
 
-macro(plat_specific_deps)
-    set(SDL2_COMMON_LIBS "")
-endmacro()
-
 macro(plat_link_and_package)
-    if(GC_CORE_DIR STREQUAL "GameCube2")
-        # Audio: libansnd. SD cards: libdvm (FAT/exFAT drivers from libogc2's libfat).
-        target_link_libraries(${BIN_NAME} PRIVATE -lansnd -ldvm -lfat -lbba -lz -logc -lm)
-    else()
-        target_link_libraries(${BIN_NAME} PRIVATE -lfat -laesnd -lbba -lz -logc -lm)
-    endif()
+    # (No -laesnd: gcAesnd.c is our own aesndlib, with the DSP mixer built in.)
+    # libdvm mounts SD cards (FAT and exFAT drivers from libogc2's libfat).
+    target_link_libraries(${BIN_NAME} PRIVATE -ldvm -lfat -lbba -lz -logc -lm)
     # zlib (devkitPro portlibs): compressed save games on the memory card.
     target_include_directories(sith_engine PRIVATE $ENV{DEVKITPRO}/portlibs/ppc/include)
     target_link_directories(${BIN_NAME} PRIVATE $ENV{DEVKITPRO}/portlibs/ppc/lib)
@@ -160,6 +142,3 @@ macro(plat_link_and_package)
     ogc_create_dol(${BIN_NAME})
 endmacro()
 
-macro(plat_extra_deps)
-
-endmacro()

@@ -226,7 +226,23 @@ int sithDSSCog_ProcessCogState(SithMessage *msg)
     {
         for (int i = 0; i < v13->numUsedSymbols; i++)
         {
+#ifdef COG_COMPRESS_VAR_SIZE
+            // Added: a vector's value lives behind a pointer. A symbol that becomes
+            // a vector here needs one (its data was a number: written through as
+            // if it were a pointer), and one that stops being a vector frees it.
+            SithCogSymbolValue* pVal = &v13->aSymbols[i].val;
+            int newType = NETMSG_POPU8();
+            if (pVal->type == SITHCOG_VALUE_VECTOR && newType != SITHCOG_VALUE_VECTOR) {
+                if (pVal->dataAsPtrs[0]) SITH_FREE((void*)pVal->dataAsPtrs[0]);
+                pVal->dataAsPtrs[0] = 0;
+            }
+            else if (pVal->type != SITHCOG_VALUE_VECTOR && newType == SITHCOG_VALUE_VECTOR) {
+                pVal->dataAsPtrs[0] = (intptr_t)SITH_ALLOC(sizeof(cog_flex_t) * 3);
+            }
+            pVal->type = newType;
+#else
             v13->aSymbols[i].val.type = NETMSG_POPU8();
+#endif
         }
 
         // TODO: verify in 64-bit, particularly with AICLASS
@@ -264,7 +280,10 @@ int sithDSSCog_ProcessCogState(SithMessage *msg)
 #ifdef QOL_IMPROVEMENTS
             else if (!Main_bMotsCompat && sym->val.type == SITHCOG_VALUE_STRING)
             {
-                
+                // Added: the string keeps its own text, but the writer above
+                // stores 4 bytes for it in JK: skip them, or every symbol after
+                // it in this cog was read 4 bytes off.
+                NETMSG_POPS32();
             }
 #endif
             else

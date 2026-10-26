@@ -3,11 +3,12 @@
 
 #include "gcSystem.h"
 #include "gcCard.h"
-#include "gcVoice.h"
 #include "gcInput.h"
 #include "gcGame.h"
 
-#include <aesndlib.h>
+#include "gcVoice.h"
+
+#include "gcAesndlib.h"
 
 #include <sys/iosupport.h>
 #include <ogc/lwp_watchdog.h>
@@ -60,13 +61,38 @@ static void gcSystem_ConsoleWrite(struct _reent* r, void* fd, const char* ptr, s
 // the same EXI channel as the memory card, and its writes corrupt card transfers.
 volatile int gcSystem_bMuteReport = 0;
 
+// The report UART through libogc2: it only writes on development consoles --
+// Dolphin passes for one, a retail console doesn't, so on hardware the log never
+// touches EXI channel 0 (shared with the SD2SP2).
+extern s32 InitializeUART(void);
+extern s32 WriteUARTN(void* buf, u32 len);
+static void gcSystem_UartWrite(const char* p, size_t len)
+{
+    static int state = 0; // 0 unknown, 1 UART, -1 none
+    if (!state) state = InitializeUART() == 0 ? 1 : -1;
+    if (state < 0) return;
+    char buf[128]; // (WriteUARTN rewrites line ends in place)
+    while (len) {
+        u32 n = len > sizeof(buf) ? sizeof(buf) : (u32)len;
+        memcpy(buf, p, n);
+        WriteUARTN(buf, n);
+        p += n;
+        len -= n;
+    }
+}
+
 static ssize_t gcSystem_TeeWrite(struct _reent* r, void* fd, const char* ptr, size_t len)
 {
     if (!gcSystem_bMuteReport)
-        gcSystem_pReportDev->write_r(r, fd, ptr, len);
+        gcSystem_UartWrite(ptr, len);
     if (gcSystem_bBootConsole)
         gcSystem_ConsoleWrite(r, fd, ptr, len);
     return len;
+}
+
+static int gcSystem_TeeCookieWrite(void* cookie, const char* buf, size_t n)
+{
+    return (int)gcSystem_TeeWrite(_REENT, NULL, buf, (size_t)n);
 }
 
 void gcSystem_BootNotice(const char* text, int ms)
@@ -92,7 +118,18 @@ static void gcSystem_StartBootConsole(GXRModeObj* rmode)
 #endif
 
     // stdout + stderr -> Dolphin OSReport.
-    SYS_STDIO_Report(true);
+    // (libogc2 routes stdout/stderr through FILEs of its own -- SYS_STDIO_Report
+    // swaps in its report stream -- which bypass the device table: the boot
+    // console stayed empty. Our own FILE goes straight to the tee below.)
+    {
+        static FILE* pTee = NULL;
+        if (!pTee) pTee = fwopen(NULL, gcSystem_TeeCookieWrite);
+        if (pTee) {
+            setvbuf(pTee, NULL, _IOLBF, 256);
+            stdout = pTee;
+            stderr = pTee;
+        }
+    }
     gcSystem_pReportDev = devoptab_list[STD_OUT];
 
     gcSystem_teeDev = *gcSystem_pReportDev;
@@ -247,6 +284,8 @@ int gcSystem_IsMainThread(void)
     return LWP_GetSelf() == gcSystem_mainThread;
 }
 
+static void gcSystem_BootLoadingEarly(void);
+
 void gcSystem_Init(void)
 {
     // Fixed so the background readers (music 50, disc read-ahead 40) rank below it.
@@ -307,6 +346,8 @@ void gcSystem_Init(void)
     printf("gcSystem: starting the DSP\n");
     AESND_Init();
     gcVoice_Init();
+
+    gcSystem_BootLoadingEarly(); // "Loading..." from the first frame
 }
 
 volatile uint64_t gcSystem_statPresentUs = 0;
@@ -328,8 +369,8 @@ void gcSystem_DrawText8(uint8_t* pBuf, int pitch, int bufH, int x, int y, const 
 }
 
 // Boot "Loading..." screen: from power-on to the intro the game loads for
-// several seconds with nothing on screen, which looks like a hang. Once the fonts
-// can be read, gcNotice_BootLoading renders the text and hands it here; it is
+// several seconds with nothing on screen, which looks like a hang. The text
+// (gcSystem_BootLoadingEarly) is handed here as soon as the video is up; it is
 // drawn with GX like any frame (writing the XFB from the CPU shows garbage
 // around it in Dolphin) and stays up until the next frame is presented.
 void gcSystem_BootOverlay(const uint16_t* pRgb565, int w, int h)
@@ -389,7 +430,9 @@ void gcSystem_BootOverlay(const uint16_t* pRgb565, int w, int h)
     GX_Position3f32(x0, y1, -0.5f); GX_TexCoord2f32(0.0f, 1.0f);
     GX_End();
 
-    // Copy (clearing the EFB back to black) and show it.
+    // Copy it into both framebuffers (whichever one is scanned out until the next
+    // frame, it shows), clearing the EFB back to black with the second, and show it.
+    GX_CopyDisp(gcSystem_aXfb[gcSystem_curXfb], GX_FALSE);
     gcSystem_curXfb ^= 1;
     GX_CopyDisp(gcSystem_aXfb[gcSystem_curXfb], GX_TRUE);
     GX_DrawDone();
@@ -399,6 +442,28 @@ void gcSystem_BootOverlay(const uint16_t* pRgb565, int w, int h)
     free(tex);
 }
 
+// "Loading..." on screen as soon as the video is up: the image the main menu's
+// font and palette make, stored in the program (gcBootImage.h), so nothing has to
+// be read first -- drawn from the game files, it only showed once the disc or SD
+// card was mounted and the GOBs opened, 10-15 s after power-on on hardware.
+#include "gcBootImage.h"
+#include "gcGame.h"
+
+static void gcSystem_BootLoadingEarly(void)
+{
+    const uint16_t* rle = gcGame_bMots ? gcBootImg_Mots : gcBootImg_Jk;
+    size_t numRle = (gcGame_bMots ? sizeof(gcBootImg_Mots) : sizeof(gcBootImg_Jk)) / sizeof(uint16_t);
+    uint16_t* rgb = (uint16_t*)malloc(GCBOOTIMG_W * GCBOOTIMG_H * 2);
+    if (!rgb) return;
+    uint32_t n = 0;
+    for (size_t i = 0; i + 1 < numRle; i += 2)
+        for (uint32_t k = 0; k < rle[i + 1] && n < GCBOOTIMG_W * GCBOOTIMG_H; k++)
+            rgb[n++] = rle[i];
+    while (n < GCBOOTIMG_W * GCBOOTIMG_H) rgb[n++] = 0;
+    gcSystem_BootOverlay(rgb, GCBOOTIMG_W, GCBOOTIMG_H);
+    free(rgb);
+}
+
 void gcSystem_BootOverlayEnd(void)
 {
     gcSystem_bootDone = 1;
@@ -406,6 +471,7 @@ void gcSystem_BootOverlayEnd(void)
 
 void gcSystem_Present(void)
 {
+
     gcSystem_bBootConsole = 0;
     gcSystem_curXfb ^= 1;
 
@@ -419,7 +485,6 @@ void gcSystem_Present(void)
     VIDEO_SetNextFramebuffer(gcSystem_aXfb[gcSystem_curXfb]);
     VIDEO_Flush();
     VIDEO_WaitVSync();
-
 }
 
 void gcSystem_Panic(const char* fmt, ...)

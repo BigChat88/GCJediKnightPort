@@ -1,13 +1,11 @@
 # Headless Dolphin for automated boot tests of the GameCube build.
 #
 #   docker build -t openjkdf2-dolphin packaging/gamecube/test
-#   docker run --rm --shm-size=1g -v "<dir with dol+iso>:/work" openjkdf2-dolphin /work/openjkdf2.dol /work/openjkdf2.iso 30
-# Default trixie (Dolphin 2503: boots a DOL directly, used for the libogc core).
-# For the libogc2 core build it from sid (Dolphin 2609; 2503 hangs libogc2 builds
-# at boot, it doesn't mirror the EXI registers libogc2 polls; 2609's nogui only
-# boots disc images, see dev.sh):
-#   docker build --build-arg DEBIAN=sid -t openjkdf2-dolphin-sid packaging/gamecube/test
-ARG DEBIAN=trixie
+#   docker run --rm --shm-size=1g -v "<dir with the iso>:/work" openjkdf2-dolphin /work/openjkdf2.iso /work/openjkdf2.iso 30
+# Debian sid: Dolphin 2609. (Trixie's 2503 hangs libogc2 programs at boot -- it
+# doesn't mirror the EXI registers libogc2 polls -- and 2609's nogui only boots
+# disc images, so the DOL is packed into an image first; see dev.sh.)
+ARG DEBIAN=sid
 FROM debian:${DEBIAN}
 
 RUN apt-get update \

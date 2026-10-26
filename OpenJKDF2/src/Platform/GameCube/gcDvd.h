@@ -13,6 +13,8 @@ extern "C" {
 // Mounts the disc filesystem (plus its writable RAM overlay) as "dvd:/".
 // Returns 1 on success.
 int gcDvd_Mount(void);
+// The game is read from an SD card in serial port 2 (SD2SP2, EXI channel 2).
+int gcDvd_UsesSerialPort2(void);
 
 // Diagnostics: total time the engine spent in dvd: reads, and the part of it
 // spent actually reading the disc/SD (cache misses).

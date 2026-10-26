@@ -976,10 +976,9 @@ void sithCogFunction_HeapGet(sithCog *pCog)
     {
         SITH_ASSERTREL(pCog->heap); // Added: J3D assert
         heapVar = &pCog->heap[idx];
-        tmp.type = heapVar->type;
-        tmp.data[0] = heapVar->data[0];
-        tmp.data[1] = heapVar->data[1];
-        tmp.data[2] = heapVar->data[2];
+        // Added: whole-struct copy. With COG_COMPRESS_VAR_SIZE data[] has one
+        // element, and copying data[1]/data[2] wrote past tmp on the stack.
+        tmp = *heapVar;
         sithCogExec_PushStack(pCog, &tmp);
     }
 }

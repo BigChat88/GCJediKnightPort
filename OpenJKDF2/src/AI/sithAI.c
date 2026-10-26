@@ -712,7 +712,7 @@ void sithAI_CreateAIFramesFomMarker(SithThing *pNewThing, SithThing *pMarker, rd
 
 void sithAI_Tick(SithThing *thing, flex_t deltaSeconds)
 {
-    if ( thing->type == SITH_THING_ACTOR && thing->actorParams.health > 0.0 )
+    if ( thing->type == SITH_THING_ACTOR && thing->actorParams.health > 0.0 && thing->actor ) // Added: actor may have no AI block
     {
         if (thing->actor->flags & SITHAI_MODE_TURNING)
             sithAI_sub_4EA630(thing->actor, deltaSeconds);

@@ -1,7 +1,7 @@
 #ifndef _PLATFORM_GAMECUBE_GCVOICE_H
 #define _PLATFORM_GAMECUBE_GCVOICE_H
 
-#include <aesndlib.h>
+#include "gcAesndlib.h"
 
 #ifdef __cplusplus
 extern "C" {

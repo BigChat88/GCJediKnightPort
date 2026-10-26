@@ -264,6 +264,12 @@ void jkCutscene_Shutdown()
 // decoded as noise); give back GPU texture copies and idle sounds, then retry.
 extern void std3D_GcReleaseMemory(void);
 extern int gcSystem_IsMainThread(void);
+static void* jkCutscene_GcSndArenaAlloc(uint32_t size)
+{
+    extern void* gcHeap_SndArenaAlloc(size_t n);
+    return gcHeap_SndArenaAlloc(size);
+}
+
 static void jkCutscene_GcLowMemory(uint32_t size)
 {
     if (!gcSystem_IsMainThread()) return;
@@ -366,12 +372,19 @@ int jkCutscene_sub_421310(char* fpath)
 
 #ifdef TARGET_GAMECUBE
     smush_low_memory_hook = jkCutscene_GcLowMemory;
+    // Added: then the sound arena (the idle sounds are dropped just below). After
+    // MotS's first level loads, the main heap has ~600 KiB free and the decoder
+    // needs ~1.3 MiB.
+    smush_alloc_fallback = jkCutscene_GcSndArenaAlloc;
     smush_alloc_failed = 0;
     // Added: a level's opening cutscene starts right after the load, with the
     // heap at its fullest; MotS's decoder needs ~1 MiB. Idle sounds come back
     // from the ARAM cache on demand, so give them up first.
-    if (sithWorld_g_pCurrentWorld)
+    if (sithWorld_g_pCurrentWorld) {
         sithSound_GcFreeAllIdle();
+        extern void stdMci_GcReleaseRing(void);
+        stdMci_GcReleaseRing(); // (no music under a cutscene; Play takes it back)
+    }
     { extern void stdSound_GcReclaim(void); stdSound_GcReclaim(); }
 #endif
     jkCutscene_pSmush = smush_from_fpath(tmp);
@@ -426,12 +439,14 @@ int jkCutscene_sub_421310(char* fpath)
         //printf("%x %x %x %x %x %x %x\n", a_d[0], a_d[1], a_d[2], a_d[3], a_d[4], a_d[5], a_d[6]);
         //printf("%x %x %x %x %x %x %x\n", a_r[0], a_r[1], a_r[2], a_r[3], a_r[4], a_r[5], a_r[6]);
         
+#ifndef TARGET_RETRO_HOMEBREW
         tRasterInfo texFmt;
         texFmt.width = jkCutscene_smk_w;
         texFmt.height = jkCutscene_smk_h;
         texFmt.format.bpp = 8;
         jkCutscene_frameBuf = stdDisplay_VBufferNew(&texFmt, 1, 0, (void*)1);
         stdDisplay_VBufferFill(jkCutscene_frameBuf, 0, NULL);
+#endif // Added: homebrew decodes straight into the menu buffer (no 192 KiB copy)
 
         smk_enable_video(jkCutscene_smk, 1);
         smk_enable_audio(jkCutscene_smk, 0, 1);
@@ -494,12 +509,14 @@ int jkCutscene_sub_421310(char* fpath)
 
         stdPlatform_Printf("Opened file %s as Smush\nWidth: %lu\nHeight: %lu\nFrames: %lu\nFPS: %f\n", tmp, jkCutscene_smk_w, jkCutscene_smk_h, jkCutscene_smk_frames, 1000000.0 / jkCutscene_smk_usf);
 
+#ifndef TARGET_RETRO_HOMEBREW
         tRasterInfo texFmt;
         texFmt.width = jkCutscene_smk_w;
         texFmt.height = jkCutscene_smk_h;
         texFmt.format.bpp = 8;
         jkCutscene_frameBuf = stdDisplay_VBufferNew(&texFmt, 1, 0, (void*)1);
         stdDisplay_VBufferFill(jkCutscene_frameBuf, 0, NULL);
+#endif // Added: homebrew decodes straight into the menu buffer (no 192 KiB copy)
 
         // Keep half of AUDIO_BUFS_DEPTH empty to allow time adjustments
         flex64_t audio_depth_us = ((flex64_t)(AUDIO_BUFS_DEPTH / 4) / 22050.0) * 1000000.0;
@@ -756,7 +773,9 @@ int jkCutscene_PauseShow(int unk)
 
 #if defined(SDL2_RENDER) || defined(TARGET_RETRO_HOMEBREW)
     stdDisplay_VBufferLock(Video_pMenuBuffer);
+#ifndef TARGET_RETRO_HOMEBREW // (homebrew: the frame is already in the menu buffer)
     stdDisplay_VBufferCopy(Video_pMenuBuffer, jkCutscene_frameBuf, 0, 50, NULL, 0);
+#endif
     stdDisplay_VBufferFill(Video_pMenuBuffer, 0, &jkCutscene_rect1);
     stdDisplay_VBufferFill(Video_pMenuBuffer, 0, &jkCutscene_rect2);
     stdDisplay_VBufferCopy(Video_pMenuBuffer, &Video_otherBuf, jkCutscene_rect1.x, jkCutscene_rect1.y, &jkCutscene_rect1, 0);
@@ -965,6 +984,29 @@ static void jkCutscene_TimedSmushFrame(int bLate) { smush_frame(jkCutscene_pSmus
 static void jkCutscene_StatsTrackQueue(void) {}
 static void jkCutscene_StatsDraw(void) {}
 
+#ifdef TARGET_RETRO_HOMEBREW
+// Added: a decoded frame into the menu buffer, 50 lines down. Word-safe copies
+// (vbuffers may be word-addressable-only); row by row unless the video is as
+// wide as the buffer.
+static void jkCutscene_GcBlitVideo(const uint8_t* pVideo)
+{
+    if (!pVideo || !Video_pMenuBuffer || !Video_pMenuBuffer->surface_lock_alloc)
+        return;
+    uint8_t* pDst = (uint8_t*)Video_pMenuBuffer->surface_lock_alloc;
+    uint32_t stride = Video_pMenuBuffer->format.rowSize;
+    uint32_t w = jkCutscene_smk_w < stride ? jkCutscene_smk_w : stride;
+    uint32_t h = jkCutscene_smk_h;
+    if (h > Video_pMenuBuffer->format.height - 50)
+        h = Video_pMenuBuffer->format.height - 50;
+    if (w == stride && jkCutscene_smk_w == stride) {
+        stdPlatform_Memcpy32(pDst + stride * 50, pVideo, w * h);
+        return;
+    }
+    for (uint32_t y = 0; y < h; y++)
+        stdPlatform_Memcpy32(pDst + stride * (50 + y), pVideo + jkCutscene_smk_w * y, w);
+}
+#endif
+
 int jkCutscene_smacker_process()
 {
     int ret = jkCutscene_smacker_process_real();
@@ -1044,8 +1086,7 @@ static int jkCutscene_smacker_process_real()
     stdDisplay_VBufferUnlock(jkCutscene_frameBuf);*/
     
     stdDisplay_VBufferLock(Video_pMenuBuffer);
-    // Added: word-safe copy (vbuffers may be word-addressable-only)
-    stdPlatform_Memcpy32((uint8_t*)Video_pMenuBuffer->surface_lock_alloc + (640*50), smk_get_video(jkCutscene_smk), jkCutscene_smk_w*jkCutscene_smk_h);
+    jkCutscene_GcBlitVideo(smk_get_video(jkCutscene_smk));
     //stdDisplay_VBufferCopy(Video_pMenuBuffer, jkCutscene_frameBuf, 0, 50, NULL, 0);
     //stdDisplay_VBufferFill(Video_pMenuBuffer, 0, &jkCutscene_rect1);
     stdDisplay_VBufferCopy(Video_pMenuBuffer, &Video_otherBuf, jkCutscene_rect1.x, jkCutscene_rect1.y, &jkCutscene_rect1, 0);
@@ -1125,17 +1166,20 @@ int jkCutscene_smusher_process()
 
     _memcpy(stdDisplay_masterPalette, smush_get_palette(jkCutscene_pSmush), 0x300);
     
-    stdDisplay_VBufferLock(jkCutscene_frameBuf);
 #ifdef TARGET_RETRO_HOMEBREW
-    // Added: word-safe copy (vbuffers may be word-addressable-only)
-    stdPlatform_Memcpy32(jkCutscene_frameBuf->surface_lock_alloc, smush_get_video(jkCutscene_pSmush), jkCutscene_smk_w*jkCutscene_smk_h);
+    // Added: straight into the menu buffer, as the Smacker path does. The frame
+    // buffer in between was 192 KiB more to find at a level's opening cutscene,
+    // with the heap at its fullest: when it failed, this wrote through NULL.
+    stdDisplay_VBufferLock(Video_pMenuBuffer);
+    jkCutscene_GcBlitVideo(smush_get_video(jkCutscene_pSmush));
 #else
+    stdDisplay_VBufferLock(jkCutscene_frameBuf);
     _memcpy(jkCutscene_frameBuf->surface_lock_alloc, smush_get_video(jkCutscene_pSmush), jkCutscene_smk_w*jkCutscene_smk_h);
-#endif
     stdDisplay_VBufferUnlock(jkCutscene_frameBuf);
     
     stdDisplay_VBufferLock(Video_pMenuBuffer);
     stdDisplay_VBufferCopy(Video_pMenuBuffer, jkCutscene_frameBuf, 0, 50, NULL, 0);
+#endif
     stdDisplay_VBufferFill(Video_pMenuBuffer, 0, &jkCutscene_rect1);
     stdDisplay_VBufferCopy(Video_pMenuBuffer, &Video_otherBuf, jkCutscene_rect1.x, jkCutscene_rect1.y, &jkCutscene_rect1, 0);
     jkCutscene_StatsDraw();
@@ -1148,7 +1192,12 @@ int jkCutscene_smusher_process()
     // Added: out of memory for the decoder: end it rather than play ~30 s of a
     // black screen.
     if (smush_alloc_failed) {
-        printf("jkCutscene: not enough memory to decode this cutscene, skipped\n");
+        {
+            extern uint32_t gcHeap_LargestFree(void);
+            extern uint32_t gcSystem_FreeBytes(void);
+            printf("jkCutscene: not enough memory to decode this cutscene (%u bytes; free %u KB, largest %u KB), skipped\n",
+                   (unsigned)smush_failed_size, (unsigned)(gcSystem_FreeBytes() / 1024), (unsigned)(gcHeap_LargestFree() / 1024));
+        }
         last_displayFrame = 0;
         last_audioUs = 0;
         extraUs = 0;

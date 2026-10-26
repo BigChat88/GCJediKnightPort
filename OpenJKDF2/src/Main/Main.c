@@ -414,11 +414,6 @@ int Main_Startup(const char *cmdline)
     Windows_Startup();
     jkStrings_Startup();
     sithCvar_Startup(); // Added
-#ifdef TARGET_GAMECUBE
-    // Added: "Loading..." on screen for the rest of the boot (see gcNotice).
-    extern void gcNotice_BootLoading(void);
-    gcNotice_BootLoading();
-#endif
 
     if (Windows_InitWindow())
     {

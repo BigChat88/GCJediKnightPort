@@ -18,6 +18,9 @@ int jkEpisode_Startup();
 void jkEpisode_Shutdown();
 int jkEpisode_LoadVerify();
 int jkEpisode_Load(jkEpisodeLoad *a1);
+#ifdef TARGET_GAMECUBE
+extern char16_t jkEpisode_gcTitle[64];
+#endif
 jkEpisodeEntry* jkEpisode_GetCurrentEpisodeEntry(jkEpisodeLoad *a1);
 jkEpisodeEntry* jkEpisode_GetNextEntryInDecisionPath(jkEpisodeLoad *pLoad, int bIsAPath);
 int jkEpisode_EndLevel(jkEpisodeLoad *pEpisode, int levelNum);

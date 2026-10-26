@@ -690,6 +690,10 @@ int main(int argc, char** argv)
         int n = 0;
         for (int i = 0; i < argc && n < 14; i++) {
             if (i == 4 && !strcmp(argv[i], "JK1")) gcArgv[n++] = (char*)gcGame_Episode(); // autoboot
+#ifdef GC_MP_TEST_host
+            else if (i == 4 && !strcmp(argv[i], "JK1MP")) gcArgv[n++] = "JKM_MP";
+            else if (i == 6 && !strcmp(argv[i], "m2.jkl")) gcArgv[n++] = "mdm02_freezer.jkl";
+#endif
             else gcArgv[n++] = argv[i];
         }
         gcArgv[n++] = "-motsCompat";

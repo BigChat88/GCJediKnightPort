@@ -854,22 +854,47 @@ int32_t sithCog_LinkCog(sithCog *pCog, SithCogSymbolRef *pRef, SithCogSymbol *pS
 // Added: whether a message would reach a handler (the cog is enabled and its
 // script has one for it). The GameCube "use" hand / B button: enemies are
 // captured by cogs too (for damaged, killed...), but nothing answers activated.
-static int sithCog_GcHandles(sithCog* pCog, int32_t msgType)
+extern void sithCogFunction_GetSenderID(sithCog* pCog);
+
+// Added: the id a handler starting with "if (GetSenderId() != N) return;" wants
+// (PUSHSYMBOL getsenderid, CALLFUNC, PUSHINT N, CMPNE, GOFALSE, RET), -1 if it
+// doesn't start like that. Cogs linked to a switch and to what it moves (a
+// crane, a door) only act when activated from the switch.
+static int32_t sithCog_GcSenderGate(sithCog* pCog, uint32_t pc)
+{
+    SithCogScript* pScript = pCog->pScript;
+    const int32_t* c = pScript->pCode;
+    if (!c || pc + 9 > pScript->codeSize) return -1;
+    c += pc;
+    if (c[0] != COG_OPCODE_PUSHSYMBOL || c[2] != COG_OPCODE_CALLFUNC || c[3] != COG_OPCODE_PUSHINT
+        || c[5] != COG_OPCODE_CMPNE || c[6] != COG_OPCODE_GOFALSE || c[8] != COG_OPCODE_RET)
+        return -1;
+    SithCogSymbol* pSym = sithCogParse_GetSymbolByID(pCog->pSymbolTable, c[1]);
+    if (!pSym || pSym->val.type != SITHCOG_VALUE_POINTER || pSym->val.dataAsFunc != sithCogFunction_GetSenderID)
+        return -1;
+    return c[4];
+}
+
+// linkid: the sender id the message would come with, -1 when unknown.
+static int sithCog_GcHandles(sithCog* pCog, int32_t msgType, int32_t linkid)
 {
     if (!pCog || !pCog->pScript || (pCog->flags & SITH_COG_DISABLED)) return 0;
-    for (uint32_t i = 0; i < pCog->pScript->numHandlers; i++)
-        if (pCog->pScript->aHandlers[i].trigId == msgType) return 1;
+    for (uint32_t i = 0; i < pCog->pScript->numHandlers; i++) {
+        if (pCog->pScript->aHandlers[i].trigId != msgType) continue;
+        int32_t gate = linkid >= 0 ? sithCog_GcSenderGate(pCog, pCog->pScript->aHandlers[i].trigPc) : -1;
+        return gate < 0 || gate == linkid;
+    }
     return 0;
 }
 
 int sithCog_GcThingHandles(SithThing *pThing, SithThing *pSrcThing, int32_t msgType)
 {
-    if (sithCog_GcHandles(pThing->pCog, msgType) || sithCog_GcHandles(pThing->pCaptureCog, msgType)) return 1;
+    if (sithCog_GcHandles(pThing->pCog, msgType, -1) || sithCog_GcHandles(pThing->pCaptureCog, msgType, -1)) return 1;
     int32_t mask = pSrcThing ? 1 << pSrcThing->type : 1;
     for (int32_t i = 0; i < sithCog_numThingLinks; i++) {
         SithCogThingLink* pLink = &sithCog_aThingLinks[i];
         if (pLink->thing == pThing && pLink->signature == pThing->signature && (pLink->mask & mask)
-            && sithCog_GcHandles(pLink->cog, msgType))
+            && sithCog_GcHandles(pLink->cog, msgType, pLink->linkid))
             return 1;
     }
     return 0;
@@ -880,7 +905,7 @@ int sithCog_GcSurfaceHandles(SithSurface *pSurf, SithThing *pSrcThing, int32_t m
     int32_t mask = pSrcThing ? 1 << pSrcThing->type : 1;
     for (int32_t i = 0; i < sithCog_numSurfaceLinks; i++) {
         SithCogSurfaceLink* pLink = &sithCog_aSurfaceLinks[i];
-        if (pLink->surface == pSurf && (pLink->mask & mask) && sithCog_GcHandles(pLink->cog, msgType))
+        if (pLink->surface == pSurf && (pLink->mask & mask) && sithCog_GcHandles(pLink->cog, msgType, pLink->linkid))
             return 1;
     }
     return 0;
