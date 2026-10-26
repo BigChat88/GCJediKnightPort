@@ -12,9 +12,9 @@
 #include "stdPlatform.h" // Added: word-safe read bounce for VRAM-resident PCM
 #include "jk.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcSystem.h"
-#include "Platform/GameCube/gcSndBank.h"
-#include "Platform/GameCube/gcAram.h"
+#include "gcSystem.h"
+#include "gcSndBank.h"
+#include "gcAram.h"
 #endif
 
 #include <ctype.h>

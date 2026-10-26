@@ -20,7 +20,17 @@
 #include "Devices/sithComm.h"
 #ifdef TARGET_GAMECUBE
 #include "General/stdFileUtil.h"
+#include "Main/jkEpisode.h"
+#include "Gui/jkGUISingleplayer.h"
 #include "General/stdFnames.h"
+#endif
+
+// Added: the game format flags jkGuiBuildMulti_ShowLoad takes (MotS: ranked Jedi,
+// and on the GameCube "Jedi Personality Only" too).
+#ifdef TARGET_GAMECUBE
+#define JKGUIMP_FORMAT_FLAGS (MULTIMODEFLAG_1000 | MULTIMODEFLAG_2000)
+#else
+#define JKGUIMP_FORMAT_FLAGS MULTIMODEFLAG_1000
 #endif
 
 static int jkGuiMultiplayer_bInitted = 0;
@@ -354,7 +364,7 @@ LABEL_1:
                     {
                         sithNet_scorelimit = v34.scoreLimit;
                         sithNet_multiplayer_timelimit = v34.timeLimit;
-                        if ( jkGuiBuildMulti_ShowLoad(&jkGuiMultiplayer_mpcInfo, v34.episodeGobName, v34.mapJklFname, 0, v34.maxRank, v34.multiModeFlags & MULTIMODEFLAG_1000) == 1 ) // MOTS altered: last arg
+                        if ( jkGuiBuildMulti_ShowLoad(&jkGuiMultiplayer_mpcInfo, v34.episodeGobName, v34.mapJklFname, 0, v34.maxRank, v34.multiModeFlags & JKGUIMP_FORMAT_FLAGS) == 1 ) // MOTS altered: last arg
                         {
                             v21 = sithMulti_CreatePlayer(
                                       v34.serverName,
@@ -426,7 +436,7 @@ LABEL_29:
                  jkGuiMultiplayer_aEntries[jkGuiMultiplayer_aElements3[3].selectedTextEntry].mapJklFname,
                  0,
                  jkGuiMultiplayer_aEntries[jkGuiMultiplayer_aElements3[3].selectedTextEntry].maxRank,
-                 jkGuiMultiplayer_aEntries[jkGuiMultiplayer_aElements3[3].selectedTextEntry].multiModeFlags & MULTIMODEFLAG_1000) != 1 )
+                 jkGuiMultiplayer_aEntries[jkGuiMultiplayer_aElements3[3].selectedTextEntry].multiModeFlags & JKGUIMP_FORMAT_FLAGS) != 1 )
             goto LABEL_28;
 #ifdef QOL_IMPROVEMENTS
         // HACK: Actually do passwords correctly
@@ -671,6 +681,32 @@ void jkGuiMultiplayer_sub_413E50(int idx)
         v6 = jkGuiMultiplayer_aEntries[idx].numPlayers;
         v2 = jkStrings_GetUniStringWithFallback("GUI_NUM_PLAYERS");
         jk_snwprintf(jkGuiMultiplayer_stru_556168.field_100, 0x80u, v2, v6, v7, v8, v9);
+#ifdef TARGET_GAMECUBE
+        // Added: MotS's game information (its strings): the rank only for ranked
+        // Jedi, and the game type on the third line.
+        if (Main_bMotsCompat)
+        {
+            uint32_t flags = jkGuiMultiplayer_aEntries[idx].multiModeFlags;
+            jk_snwprintf(jkGuiMultiplayer_stru_556168.field_100, 0x80u, jkStrings_GetUniStringWithFallback("GUINET_NUMPLAYERS"), v6, v7);
+            if (flags & MULTIMODEFLAG_1000) {
+                char16_t wRank[64];
+                jk_snwprintf(wRank, 64, jkStrings_GetUniStringWithFallback("GUINET_MAXRANK"), v8, v9);
+                __wcscat(jkGuiMultiplayer_stru_556168.field_100, wRank);
+            }
+            if (!jkEpisode_var2)
+                jkEpisode_LoadVerify(); // (the episode types, once)
+            const char* pType = "GUINET_GAMEPERSONALITIES";
+            if (jkGuiSingleplayer_FUN_0041d590(jkGuiMultiplayer_aEntries[idx].episodeGobName) & JK_EPISODE_SABER_ONLY)
+                pType = "GUINET_GAMESABERONLY";
+            else if (flags & MULTIMODEFLAG_1000)
+                pType = "GUINET_GAMEJEDIONLY";
+            stdString_SafeWStrCopy((char16_t*)jkGuiMultiplayer_stru_556168.field_200, jkStrings_GetUniStringWithFallback(pType), 0x80);
+            if (!(flags & MULTIMODEFLAG_1000) && (flags & MULTIMODEFLAG_2000)) {
+                __wcscat((char16_t*)jkGuiMultiplayer_stru_556168.field_200, u" / ");
+                __wcscat((char16_t*)jkGuiMultiplayer_stru_556168.field_200, jkStrings_GetUniStringWithFallback("GUI_JEDIONLY"));
+            }
+        }
+#endif
         jkGui_guid_556040 = jkGuiMultiplayer_aEntries[idx].guidInstance;
         if ( (jkGuiMultiplayer_aEntries[idx].sessionFlags & SESSIONFLAG_PASSWORD) != 0 )
         {
@@ -795,7 +831,7 @@ int jkGuiMultiplayer_Show2()
             v2 = jkGuiRend_DisplayAndReturnClicked(&jkGuiMultiplayer_menu4);
             jkGui_SetModeGame();
             if ( v2 == 1
-              && jkGuiBuildMulti_ShowLoad(&jkGuiMultiplayer_mpcInfo, jkGuiMultiplayer_multiEntry.episodeGobName, jkGuiMultiplayer_multiEntry.mapJklFname, 0, jkGuiMultiplayer_multiEntry.maxRank, jkGuiMultiplayer_multiEntry.multiModeFlags & MULTIMODEFLAG_1000) == 1 )
+              && jkGuiBuildMulti_ShowLoad(&jkGuiMultiplayer_mpcInfo, jkGuiMultiplayer_multiEntry.episodeGobName, jkGuiMultiplayer_multiEntry.mapJklFname, 0, jkGuiMultiplayer_multiEntry.maxRank, jkGuiMultiplayer_multiEntry.multiModeFlags & JKGUIMP_FORMAT_FLAGS) == 1 )
             {
                 sithMulti_InitTick(jkGuiMultiplayer_multiEntry.tickRateMs);
                 jkMain_loadFile2(jkGuiMultiplayer_multiEntry.episodeGobName, jkGuiMultiplayer_multiEntry.mapJklFname);
@@ -806,7 +842,7 @@ int jkGuiMultiplayer_Show2()
         if ( jkGuiNetHost_Show(&v8) != 1
           || (sithNet_scorelimit = v8.scoreLimit,
               sithNet_multiplayer_timelimit = v8.timeLimit,
-              jkGuiBuildMulti_ShowLoad(&jkGuiMultiplayer_mpcInfo, v8.episodeGobName, v8.mapJklFname, 0, v8.maxRank, v8.multiModeFlags & MULTIMODEFLAG_1000) != 1) )
+              jkGuiBuildMulti_ShowLoad(&jkGuiMultiplayer_mpcInfo, v8.episodeGobName, v8.mapJklFname, 0, v8.maxRank, v8.multiModeFlags & JKGUIMP_FORMAT_FLAGS) != 1) )
         {
 LABEL_10:
             stdComm_CloseConnection();
@@ -909,7 +945,7 @@ int jkGuiMultiplayer_ShowWaitHostSettings()
 }
 
 #ifdef GC_MP_TEST_join
-#include "Platform/GameCube/gcNet.h"
+#include "gcNet.h"
 #include <unistd.h>
 // Added: multiplayer test without menus (GC_MP_TEST=join): join the first game
 // found on the network with a default character, as the join screen would.

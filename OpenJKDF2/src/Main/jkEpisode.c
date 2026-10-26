@@ -20,6 +20,12 @@
 int jkEpisode_numBubbles = 0;
 #endif
 
+#ifdef TARGET_GAMECUBE
+// Added: title of the episode last loaded (the save screen's "Episode" line
+// when the episode list wasn't read, e.g. a game loaded from the main menu).
+char16_t jkEpisode_gcTitle[64];
+#endif
+
 // MOTS altered
 int jkEpisode_Startup()
 {
@@ -314,6 +320,15 @@ int jkEpisode_Load(jkEpisodeLoad *a1)
             break;
         pHS->fileGets(v2, a1a, 128);
     }
+#ifdef TARGET_GAMECUBE
+    if ( v4 )
+    {
+        char key[128];
+        stdString_GetQuotedStringContents(a1a, key, 128);
+        _wcsncpy(jkEpisode_gcTitle, jkStrings_GetUniStringWithFallback(key), 63);
+        jkEpisode_gcTitle[63] = 0;
+    }
+#endif
     v7 = 0;
     pHS->fileGets(v2, a1a, 128);
     if ( pHS->fileEof(v2) )

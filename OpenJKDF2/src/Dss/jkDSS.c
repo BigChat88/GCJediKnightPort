@@ -641,11 +641,14 @@ int jkDSS_ProcessSetSaberInfo2(SithMessage *msg)
         }
         else {
             // Added: Why?
-            if ((playerInfoIdx+1) > jkPlayer_maxPlayers && playerInfoIdx < NUM_JKPLAYER_THINGS) {
+            // Added: JKPLAYER_NUM_INFOS (playerThings' and jkPlayer_playerInfos'
+            // size, 11 on the consoles), not NUM_JKPLAYER_THINGS: past it this wrote
+            // over other memory, and so did everything looping to jkPlayer_maxPlayers.
+            if ((playerInfoIdx+1) > jkPlayer_maxPlayers && playerInfoIdx >= 0 && playerInfoIdx < JKPLAYER_NUM_INFOS) {
                 jkPlayer_maxPlayers = playerInfoIdx+1;
             }
 
-            if (playerInfoIdx < jkPlayer_maxPlayers) {
+            if (playerInfoIdx >= 0 && playerInfoIdx < jkPlayer_maxPlayers && playerInfoIdx < JKPLAYER_NUM_INFOS) {
                 playerInfo = &playerThings[playerInfoIdx];
             }
         }

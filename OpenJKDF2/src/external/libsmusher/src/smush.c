@@ -10,7 +10,9 @@
 int _smush_debug_prints = 0;
 
 void (*smush_low_memory_hook)(uint32_t size) = NULL;
+void* (*smush_alloc_fallback)(uint32_t size) = NULL; // Added: memory of last resort (freed with free())
 int smush_alloc_failed = 0; // Added: set when an allocation failed even after the hook
+uint32_t smush_failed_size = 0; // Added: the size of that allocation
 
 void* smush_alloc(uint32_t size)
 {
@@ -19,7 +21,9 @@ void* smush_alloc(uint32_t size)
         smush_low_memory_hook(size);
         ret = malloc(size);
     }
-    if (!ret && size) smush_alloc_failed = 1;
+    if (!ret && size && smush_alloc_fallback)
+        ret = smush_alloc_fallback(size);
+    if (!ret && size) { smush_alloc_failed = 1; smush_failed_size = size; }
     return ret;
 }
 
@@ -44,13 +48,10 @@ smush_ctx* smush_from_fpath(const char* fpath)
 
     memset(ctx, 0, sizeof(*ctx));
 
-    ctx->framebuffer = smush_alloc(640*480*sizeof(uint8_t));
-    if (!ctx->framebuffer) {
-        free(ctx);
-        return NULL;
-    }
-    memset(ctx->framebuffer, 0, 640*480*sizeof(uint8_t));
-    // Added: framebuffer_stor is allocated on the first STOR (most movies never use it).
+    // Added: framebuffer is allocated on first use: codec 48 movies (MotS) show its
+    // delta buffer instead, 300 KiB less to find for a level's opening cutscene.
+    // framebuffer_stor is allocated on the first STOR (most movies never use it).
+    ctx->framebuffer = NULL;
     ctx->framebuffer_stor = NULL;
     ctx->c48_ctx = NULL;
 
@@ -165,8 +166,17 @@ uint8_t* smush_get_palette(smush_ctx* ctx) {
     return ctx->palette;
 }
 
-uint8_t* smush_get_video(smush_ctx* ctx) {
+uint8_t* smush_framebuffer(smush_ctx* ctx) {
+    if (!ctx->framebuffer) {
+        ctx->framebuffer = smush_alloc(640*480*sizeof(uint8_t));
+        if (ctx->framebuffer)
+            memset(ctx->framebuffer, 0, 640*480*sizeof(uint8_t));
+    }
     return ctx->framebuffer;
+}
+
+uint8_t* smush_get_video(smush_ctx* ctx) {
+    return ctx->video ? ctx->video : ctx->framebuffer;
 }
 
 uint32_t smush_video_width(smush_ctx* ctx) {
@@ -639,10 +649,12 @@ void smush_proc_ftch(smush_ctx* ctx, uint32_t seek_pos, uint32_t total_size)
 
     //smush_error("FTCH: %d %d\n", idk_0, idk);
 
+    if (!smush_framebuffer(ctx)) return;
     if (ctx->framebuffer_stor)
         memcpy(ctx->framebuffer, ctx->framebuffer_stor, 640*480*sizeof(uint8_t));
     else
         memset(ctx->framebuffer, 0, 640*480*sizeof(uint8_t));
+    ctx->video = NULL; // (shows the frame buffer)
 }
 
 void smush_proc_frme(smush_ctx* ctx, uint32_t seek_pos, uint32_t total_size, int is_audio_only)
@@ -725,8 +737,14 @@ skip_nonaudio:
     if (ctx->store_next) {
         if (!ctx->framebuffer_stor)
             ctx->framebuffer_stor = smush_alloc(640*480*sizeof(uint8_t));
-        if (ctx->framebuffer_stor)
-            memcpy(ctx->framebuffer_stor, ctx->framebuffer, 640*480*sizeof(uint8_t));
+        // (The frame shown: a codec's buffer holds video_size bytes of it.)
+        uint8_t* pShown = smush_get_video(ctx);
+        uint32_t shown = ctx->video ? ctx->video_size : 640*480;
+        if (shown > 640*480) shown = 640*480;
+        if (ctx->framebuffer_stor && pShown) {
+            memcpy(ctx->framebuffer_stor, pShown, shown);
+            memset(ctx->framebuffer_stor + shown, 0, 640*480 - shown);
+        }
 
         ctx->store_next = 0;
     }

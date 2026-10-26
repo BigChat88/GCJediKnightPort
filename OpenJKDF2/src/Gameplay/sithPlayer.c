@@ -41,6 +41,8 @@ void sithPlayer_Startup(int idx)
     SithPlayer *v1; // esi
     SithThing *v2; // eax
 
+    if ( idx < 0 || idx >= JKPLAYER_NUM_INFOS ) // Added: see sithPlayer_Reset
+        return;
     v1 = &jkPlayer_playerInfos[idx];
     v1->flags = jkPlayer_playerInfos[idx].flags & ~1u;
     v1->playerNetId = 0;
@@ -199,7 +201,13 @@ void sithPlayer_SetLocalPlayer(int playerNum)
     // Added: idk why this is needed?
     //sithPlayer_g_pLocalPlayerThing->controlType = SITH_CT_10;
 
+#ifdef TARGET_GAMECUBE
+    // Added: in multiplayer, the character's name (the profile is fixed on the
+    // GameCube, so every player was "Kyle" / "Mara"), as the join request sends.
+    _wcsncpy(sithPlayer_g_pLocalPlayer->player_name, (sithNet_isMulti && jkPlayer_name[0]) ? jkPlayer_name : jkPlayer_playerShortName, 0x1Fu);
+#else
     _wcsncpy(sithPlayer_g_pLocalPlayer->player_name, jkPlayer_playerShortName, 0x1Fu);
+#endif
     sithPlayer_g_pLocalPlayer->player_name[31] = 0;
 
     _wcsncpy(sithPlayer_g_pLocalPlayer->multi_name, sithMulti_name, 0x1Fu);
@@ -474,6 +482,13 @@ void sithPlayer_Reset(unsigned int playerNum)
 {
     SithPlayer *pPlayerInfo;
 
+    // Added: JKPLAYER_NUM_INFOS, not 32. The multiplayer startup resets all 32
+    // slots, and on the consoles the array has 11: the rest went over the memory
+    // after it (it wiped bin 129's type in MotS, which shifted GetWeaponBin by one
+    // and made the saber cog turn the saber down: no first-person weapon, a hang
+    // when switching weapons).
+    if ( playerNum >= JKPLAYER_NUM_INFOS )
+        return;
     pPlayerInfo = &jkPlayer_playerInfos[playerNum];
     if ( playerNum < 0x20 )
     {

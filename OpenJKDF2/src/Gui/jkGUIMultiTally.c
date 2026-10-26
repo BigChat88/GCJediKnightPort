@@ -197,9 +197,16 @@ int jkGuiMultiTally_Show(int a1)
     char16_t wtmp2[1024]; // [esp+1020h] [ebp-28E80h] BYREF
     char16_t wtmp3[1024]; // [esp+1820h] [ebp-28680h] BYREF
     char16_t wtmp4[1024]; // [esp+2020h] [ebp-27E80h] BYREF
+#ifdef TARGET_GAMECUBE
+    // Added: on the heap. The 32 players' copy (~157 KiB) doesn't fit the main
+    // thread's stack (151 KiB): libogc2 caught the overflow leaving a multiplayer
+    // game (crash screen); libogc wrote over the memory below the stack unseen.
+    SithPlayer* aPlayerInfoSorted;
+#else
     SithPlayer aPlayerInfoSorted[32]; // [esp+2820h] [ebp-27680h] BYREF
+#endif
 
-    memset(jkGuiMultiTally_waTmp, 0, 0x40u);
+    memset(jkGuiMultiTally_waTmp, 0, sizeof(jkGuiMultiTally_waTmp));
     jkGuiMultiTally_msStart = stdPlatform_GetTimeMsec();
     jkGuiMultiTally_idkType = a1;
     if ( (sithNet_MultiModeFlags & MULTIMODEFLAG_TEAMS) != 0 )
@@ -229,7 +236,19 @@ int jkGuiMultiTally_Show(int a1)
         jkPlayer_playerInfos[0].flags = 0;
 #endif
 
-    _memcpy(aPlayerInfoSorted, jkPlayer_playerInfos, sizeof(aPlayerInfoSorted));
+#ifdef TARGET_GAMECUBE
+    aPlayerInfoSorted = (SithPlayer*)malloc(32 * sizeof(SithPlayer));
+    if (!aPlayerInfoSorted) {
+        // (No memory for the table: leave without it.)
+#ifdef QOL_IMPROVEMENTS
+        if (stdComm_bIsServer && jkGuiNetHost_bIsDedicated)
+            jkPlayer_playerInfos[0].flags = hack;
+#endif
+        jkGui_SetModeGame();
+        return 1;
+    }
+#endif
+    _memcpy(aPlayerInfoSorted, jkPlayer_playerInfos, 32 * sizeof(SithPlayer));
     _qsort(aPlayerInfoSorted, 0x20u, sizeof(SithPlayer), (int (__cdecl *)(const void *, const void *))jkGuiMultiTally_SortPlayerScore);
     v2 = 0;
     v35 = 0;
@@ -436,6 +455,9 @@ LABEL_50:
         jkPlayer_playerInfos[0].flags = hack;
 #endif
 
+#ifdef TARGET_GAMECUBE
+    free(aPlayerInfoSorted);
+#endif
     jkGui_SetModeGame();
     return v17;
 }

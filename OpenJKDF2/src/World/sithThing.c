@@ -1875,8 +1875,13 @@ int sithThing_ParseThingArg(StdConffileArg *arg, SithThing* pThing, int param)
             // MOTS added
             if (Main_bMotsCompat) {
                 pCog->flags |= SITH_COG_CLASS;
-                if (pCog->flags & SITH_COG_SERVER) {
-                    pCog->flags |= SITH_COG_CLASS | SITH_COG_LOCAL;
+                // Added: was inverted (only cogs flagged "server" were made
+                // local). Class cogs run on each machine, as in JK, except the
+                // server-only ones (the exploding tanks, flags=0x80). Otherwise
+                // a client sent its player's messages to the host: kyle_m.cog's
+                // "newplayer" never gave the one who joined any weapons.
+                if (!(pCog->flags & SITH_COG_SERVER)) {
+                    pCog->flags |= SITH_COG_LOCAL;
                 }
             }
             else {

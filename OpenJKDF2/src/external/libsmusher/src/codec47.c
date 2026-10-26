@@ -625,7 +625,9 @@ void codec47_proc(smush_ctx* parent_ctx, const uint8_t* data, size_t data_len)
     // stands after the decode is what hits the screen; the rotation then
     // sets up the history buffers for the NEXT frame. (Getting this order
     // wrong plays every rotated frame one position late.)
-    memcpy(parent_ctx->framebuffer, ctx->bufA, (size_t)w * h);
+    if (smush_framebuffer(parent_ctx)) // Added: allocated on first use
+        memcpy(parent_ctx->framebuffer, ctx->bufA, (size_t)w * h);
+    parent_ctx->video = NULL;
 
     // Buffer rotation (smushFrame_sub_43F5A0 tail), in-sequence frames only.
     if ((int32_t)seq == ctx->last_seq + 1)

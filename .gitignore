@@ -10,19 +10,17 @@
 *.gcm
 *.dol
 *.elf
-/OpenJKDF2/build_gamecube/
-/OpenJKDF2/build_gamecube_dev/
+*.map
+# build_gamecube (release), build_gamecube_dev (dev.sh), build_gamecube_diag
+/OpenJKDF2/build_gamecube*/
 # prebuilt engine in release bundles (built by CI)
 /engine/
 # CI staging
 /stage/
+/toolbin/
 
 # --- local development / testing (dev.sh, headless Dolphin, record_access.py) ---
-/disc/
-/disc_mots/
-/rec/
 /frames/
-/cmp/
 /dolphin-user/
 /.dolphin-gc/
 *.log
@@ -32,6 +30,7 @@
 
 # --- editors / OS / python ---
 /.vscode/
+/.dide/
 .vs/
 .idea/
 *.swp
@@ -43,4 +42,3 @@ __pycache__/
 
 # --- backup of OpenJKDF2's own git history (upstream base 02297602) ---
 /.openjkdf2-upstream.git/
-/toolbin/

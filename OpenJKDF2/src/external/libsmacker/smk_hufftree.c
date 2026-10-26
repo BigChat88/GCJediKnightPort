@@ -42,6 +42,75 @@ struct smk_huff16_t
 	uint16_t cache[3];
 };
 
+#ifdef TARGET_GAMECUBE
+/* Added: tree nodes come from a pool. A video's trees are ~290000 nodes of 8
+	bytes, each one its own calloc: libogc2's dlmalloc spends ~32 bytes on a
+	block that small, so opening the intro took 9 MB and the menu buffers
+	failed (DSI on hardware). Nodes are carved out of 64 KB slabs, freed nodes
+	go to a free list, and the slabs go back to the heap when no node is left.
+	(Only the main thread decodes videos.) */
+#define SMK_NODE_SLAB 8192
+struct smk_node_slab { struct smk_node_slab* next; struct smk_huff8_t nodes[SMK_NODE_SLAB]; };
+static struct smk_node_slab* smk_node_slabs = NULL;
+static struct smk_huff8_t* smk_node_free = NULL;
+static unsigned long smk_node_used = 0, smk_node_live = 0;
+
+static struct smk_huff8_t* smk_node_alloc(void)
+{
+	struct smk_huff8_t* n;
+	if (smk_node_free)
+	{
+		n = smk_node_free;
+		smk_node_free = n->b0;
+	}
+	else
+	{
+		if (!smk_node_slabs || smk_node_used == SMK_NODE_SLAB)
+		{
+			struct smk_node_slab* s = (struct smk_node_slab*)malloc(sizeof(struct smk_node_slab));
+			if (!s) return NULL;
+			s->next = smk_node_slabs;
+			smk_node_slabs = s;
+			smk_node_used = 0;
+		}
+		n = &smk_node_slabs->nodes[smk_node_used++];
+	}
+	memset(n, 0, sizeof(*n));
+	smk_node_live++;
+	return n;
+}
+
+static void smk_node_release(struct smk_huff8_t* n)
+{
+	n->b0 = smk_node_free;
+	smk_node_free = n;
+	if (--smk_node_live == 0)
+	{
+		while (smk_node_slabs)
+		{
+			struct smk_node_slab* s = smk_node_slabs;
+			smk_node_slabs = s->next;
+			free(s);
+		}
+		smk_node_free = NULL;
+		smk_node_used = 0;
+	}
+}
+
+#define smk_node_malloc(p) \
+{ \
+	if (!(p = smk_node_alloc())) \
+	{ \
+		fprintf(stderr, "libsmacker::smk_node_malloc - ERROR: out of memory\n"); \
+		goto error; \
+	} \
+}
+#define smk_node_free_one(p) { smk_node_release(p); p = NULL; }
+#else
+#define smk_node_malloc(p) smk_malloc(p, sizeof(struct smk_huff8_t))
+#define smk_node_free_one(p) smk_free(p)
+#endif
+
 /*********************** 8-BIT HUFF-TREE FUNCTIONS ***********************/
 /** safe build with built-in error jump */
 #define smk_huff8_build_rec(bs,p) \
@@ -65,7 +134,7 @@ static struct smk_huff8_t* _smk_huff8_build_rec(struct smk_bit_t* bs)
 	smk_bs_read_1(bs, bit);
 
 	/* Malloc a structure. */
-	smk_malloc(ret, sizeof(struct smk_huff8_t));
+	smk_node_malloc(ret);
 
 	if (bit)
 	{
@@ -184,7 +253,7 @@ void smk_huff8_free(struct smk_huff8_t* t)
 	}
 
 	/* Safe-delete tree node. */
-	smk_free(t);
+	smk_node_free_one(t);
 
 error: ;
 }
@@ -217,7 +286,7 @@ static struct smk_huff8_t* _smk_huff16_build_rec(struct smk_bit_t* bs, const uin
 	smk_bs_read_1(bs, bit);
 
 	/* Malloc a structure. */
-	smk_malloc(ret, sizeof(struct smk_huff8_t));
+	smk_node_malloc(ret);
 
 	if (bit)
 	{

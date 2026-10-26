@@ -1,6 +1,6 @@
 # OpenJKDF2 for the Nintendo GameCube
 
-Work-in-progress port (devkitPPC + libogc). Platform code lives in
+Work-in-progress port (devkitPPC + libogc2). Platform code lives in
 `src/Platform/GameCube/`; the build target is `PLAT_GAMECUBE`.
 
 ## Building
@@ -46,17 +46,19 @@ The image boots on its own (Dolphin, Swiss, ODEs) through the apploader in
 
 ### Real hardware (Swiss)
 
-Swiss's disc emulation only hooks the official Nintendo SDK's drive routines, and
-this is a libogc program, so an image booted from an SD card can't be read through
-the "drive". Instead, at startup the game looks for its own image on the SD card
-(SD2SP2, then SD Gecko style adapters in slot B and slot A): `sd:/openjkdf2.iso`,
-anything under `sd:/games/` (two levels deep), or `.iso`/`.gcm` files in the root,
-recognized by the disc ID `OJKEOJ`. If no image is found, it falls back to the
-real drive (burned disc, ODE), waiting at most 15 s before showing an error.
+Booted from one of its own images (a burned disc, an optical drive emulator, a
+loader such as cubeboot), the game reads it through the drive; it checks that the
+drive really serves the image's data (its first and last GOB). Swiss's disc
+emulation only hooks the official Nintendo SDK's drive routines, so an image Swiss
+boots from an SD card fails that check, and the game then looks for its own image
+on the SD card (SD2SP2, then SD Gecko style adapters in slot B and slot A):
+`sd:/openjkdf2.iso`, files named `openjk*` in the root or under `sd:/games/` (two
+levels deep) first, then any `.iso`/`.gcm`, recognized by the disc ID `OJKEOJ`
+(`OJMEOJ` for Mysteries of the Sith). With no image anywhere it waits at most 15 s
+for a drive before showing an error.
 
-FAT cards go through libfat; exFAT cards (what large cards usually use) through a
-small read-only exFAT reader, `src/Platform/GameCube/gcExfat.c` (raw volume, MBR or
-GPT; fragmented files are fine).
+The SD card is mounted with libogc2's libdvm: FAT and exFAT (what large cards
+usually use) alike.
 
 Copy `openjkdf2.iso` to the card, then boot either the ISO or `openjkdf2.dol` from
 Swiss. Saves still go to the memory card in slot A. If it hangs on hardware, a
@@ -82,8 +84,12 @@ GC_AUTOBOOT_FROM_DISC=1` build and an image made with `make_gcm.py --autoboot-sl
 
 ```sh
 docker build -t openjkdf2-dolphin packaging/gamecube/test
-docker run --rm --shm-size=1g -v "<dir>:/work" openjkdf2-dolphin /work/openjkdf2.dol /work/openjkdf2.iso 60
+docker run --rm --shm-size=1g -v "<dir>:/work" openjkdf2-dolphin /work/openjkdf2.iso /work/openjkdf2.iso 60
 ```
+
+(Dolphin 2609: it boots disc images only, so pack the DOL into one first with
+`make_gcm.py`; `dev.sh` at the repository root does it all. Sound needs
+`-e DOLPHIN_ARGS="-C Dolphin.Core.DSPHLE=False"` -- DSP LLE.)
 
 It prints the OSReport log, and frame dumps (PNG) land in `<dir>/frames`.
 Pass `-e DOLPHIN_ARGS="-C Dolphin.Core.FastDiscSpeed=True"` to skip DVD timing

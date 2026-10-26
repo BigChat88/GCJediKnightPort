@@ -25,8 +25,8 @@
 #include "jk.h"
 #include <math.h>
 
-#include "Platform/GameCube/gcOgc.h"
-#include "Platform/GameCube/gcInput.h"
+#include "gcOgc.h"
+#include "gcInput.h"
 
 // Pad sticks report roughly +-100 at full deflection (s8 range).
 #define GC_STICK_RANGE      (100)

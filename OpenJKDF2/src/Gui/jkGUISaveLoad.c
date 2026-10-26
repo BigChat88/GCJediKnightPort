@@ -21,8 +21,8 @@
 
 #include "jk.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcCard.h"
-#include "Platform/GameCube/gcDvd.h"
+#include "gcCard.h"
+#include "gcDvd.h"
 #include "Gui/jkGUIDialog.h"
 #include "Gui/jkGUITitle.h"
 #include "Main/jkMain.h"
@@ -141,6 +141,15 @@ LABEL_15:
     {
         stdString_CharToWchar(jkGuiSaveLoad_wtextEpisode, v1, 255);
         jkGuiSaveLoad_wtextEpisode[255] = 0;
+#ifdef TARGET_GAMECUBE
+        // Added: the list of episodes wasn't read (a game loaded from the main
+        // menu): the title of the episode being played instead of its gob name.
+        if ( jkEpisode_gcTitle[0] && !__strcmpi(v1, sithWorld_episodeName) )
+        {
+            _wcsncpy(jkGuiSaveLoad_wtextEpisode, jkEpisode_gcTitle, 0xFFu);
+            jkGuiSaveLoad_wtextEpisode[255] = 0;
+        }
+#endif
     }
     _wcsncpy(jkGuiSaveLoad_wtextSaveName, saveName, 0xFFu);
     jkGuiSaveLoad_wtextSaveName[255] = 0;
@@ -240,20 +249,26 @@ static void jkGuiSaveLoad_GcPopulateList(int bIsSave)
         _memset(e, 0, sizeof(*e));
         stdString_SafeStrCopy(e->fpath, fname, 128);
 
-        int bUsed = 0;
-        stdFile_t f = pLowLevelHS->fileOpen(path, "rb");
-        if (f) {
-            bUsed = pLowLevelHS->fileRead(f, &e->saveHeader, sizeof(sithGamesave_Header)) == sizeof(sithGamesave_Header)
-                    && (e->saveHeader.version == 6 || e->saveHeader.version == 0x7D6);
-            pLowLevelHS->fileClose(f);
+        // The header kept by gcCard (opening the slot unpacks the whole save,
+        // which mid-level can fail for lack of memory: the slot went missing).
+        int bInSlot = 0;
+        gcCard_GetSlotInfo(n, &bInSlot);
+        int bHead = gcCard_GetSlotHeader(n, &e->saveHeader, sizeof(sithGamesave_Header));
+        if (!bHead) {
+            stdFile_t f = bInSlot ? pLowLevelHS->fileOpen(path, "rb") : 0;
+            if (f) {
+                bHead = pLowLevelHS->fileRead(f, &e->saveHeader, sizeof(sithGamesave_Header)) == sizeof(sithGamesave_Header);
+                pLowLevelHS->fileClose(f);
+            }
         }
+        int bUsed = bHead && (e->saveHeader.version == 6 || e->saveHeader.version == 0x7D6);
 
         if (bUsed) {
             char16_t* pTilde = __wcschr(e->saveHeader.saveName, U'~');
             if (pTilde) *pTilde = 0;
             jk_snwprintf(label, 128, u"Save %d: %s", n, e->saveHeader.saveName);
         }
-        else if (bIsSave && !bOfferedEmpty && sithWorld_g_pCurrentWorld && gcCard_CanCreateSave()) {
+        else if (bIsSave && !bInSlot && !bOfferedEmpty && sithWorld_g_pCurrentWorld && gcCard_CanCreateSave()) {
             // Describe it with the game about to be saved (shown in the info panel).
             bOfferedEmpty = 1;
             _memset(&e->saveHeader, 0, sizeof(e->saveHeader)); // version 0 marks the empty slot

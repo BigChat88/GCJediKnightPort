@@ -86,9 +86,9 @@ void jkGuiEsc_Shutdown()
 }
 
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcInput.h"
+#include "gcInput.h"
 #include "Main/jkHud.h"
-#include "Platform/GameCube/jkGUICheats.h"
+#include "jkGUICheats.h"
 
 #define JKGUIESC_GC_CHEATS 100
 

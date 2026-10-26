@@ -19,7 +19,7 @@
 #include "jk.h"
 #include "types.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/jkGUIGcKeyboard.h"
+#include "jkGUIGcKeyboard.h"
 #endif
 
 #include <math.h>
@@ -301,6 +301,19 @@ void jkGuiRend_Paint(jkGuiMenu *menu)
 
     jkGuiElement* clickable = &menu->paElements[0];
     int32_t clickableIdx = 0;
+#ifdef TARGET_RETRO_HOMEBREW
+    // Added: the whole background isn't copied back here (above), so a repaint
+    // drew over what was on screen: hidden elements stayed, stars taken back by
+    // Reset still showed. Give each element its background back first.
+    while ( clickable->type != ELEMENT_END )
+    {
+        if ( clickable->rect.width > 0 && clickable->rect.height > 0 )
+            jkGuiRend_CopyVBuffer(menu, &clickable->rect);
+        clickable = &menu->paElements[++clickableIdx];
+    }
+    clickable = &menu->paElements[0];
+    clickableIdx = 0;
+#endif
     while ( clickable->type != ELEMENT_END )
     {
         jkGuiRend_UpdateAndDrawClickable(clickable, menu, 0);

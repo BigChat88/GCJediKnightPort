@@ -71,6 +71,10 @@ LABEL_10:
             v5 = 1;
         else
             v5 = sithMap_Draw(v3);
+        // Added: always go on from the player's sector. A sector with nothing in
+        // view ended the walk there, so moving or turning the map until the
+        // player's own sector left the view made the whole map disappear.
+        v5 = 1;
         if ( v5 )
         {
             for ( i = v3->adjoins; i; i = i->next )
@@ -107,6 +111,10 @@ LABEL_11:
             v2 = 1;
         else
             v2 = sithMap_Draw(pSector);
+        // Added: likewise past sectors out of view (a corridor leaving the screen
+        // and coming back cut off everything behind it); the walk stays bounded
+        // by its depth (sithMap_var) and each sector is drawn once.
+        v2 = 1;
         if ( v2 )
         {
             for ( i = pSector->adjoins; i; i = i->next )

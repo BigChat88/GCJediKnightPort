@@ -16,10 +16,10 @@
 
 #ifdef STDSOUND_GAMECUBE
 
-#include "Platform/GameCube/gcOgc.h"
-#include "Platform/GameCube/gcDvd.h"
-#include "Platform/GameCube/gcVoice.h"
-#include <aesndlib.h>
+#include "gcOgc.h"
+#include "gcDvd.h"
+#include "gcVoice.h"
+#include "gcAesndlib.h"
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -41,7 +41,10 @@ static AESNDPB*          gcMusic_pVoice = NULL;
 static dvdcmdblk         gcMusic_cmd;
 
 static lwp_t             gcMusic_thread = LWP_THREAD_NULL;
-static uint8_t           gcMusic_threadStack[16 * 1024] __attribute__((aligned(32)));
+// (64 KiB: on an SD card its reads go through libdvm and exFAT, and 16 KiB
+// overflowed into the next variables -- crashes on hardware after the first
+// cutscene.)
+static uint8_t           gcMusic_threadStack[64 * 1024] __attribute__((aligned(32)));
 static mutex_t           gcMusic_mtx = LWP_MUTEX_NULL;
 
 // Reader state (guarded by gcMusic_mtx)
@@ -108,8 +111,14 @@ static void gcMusic_VoiceCallback(AESNDPB* pb, u32 state, void* arg)
         if (state != VOICE_STATE_STOPPED) AESND_SetVoiceStop(pb, true);
         return;
     }
-    if (state == VOICE_STATE_STREAM)
+    if (state == VOICE_STATE_STREAM) {
+        // The volume set from the game thread (stdMci_SetVolume) can be undone by
+        // AESND writing back its copy of the voice, which is always in flight:
+        // e.g. the music never got quieter under Maw's lines (SetMusicVol 0.3,
+        // level 14). Here no voice is in flight, so set it again (two fields).
+        AESND_SetVoiceVolume(pb, gcMusic_vol, gcMusic_vol);
         gcMusic_Feed(pb);
+    }
 }
 
 // Reader thread: keep the ring topped up from the disc, advancing through the
@@ -119,7 +128,7 @@ static void* gcMusic_ThreadMain(void* arg)
     while (1)
     {
         LWP_MutexLock(gcMusic_mtx);
-        int bWork = gcMusic_bPlaying && !gcMusic_bEnded
+        int bWork = gcMusic_bPlaying && !gcMusic_bEnded && gcMusic_pRing
                     && (GCMUSIC_RING - (gcMusic_ringW - gcMusic_ringR)) >= GCMUSIC_READ;
         if (bWork)
         {
@@ -194,10 +203,30 @@ void stdMci_Shutdown()
     stdMci_Stop();
 }
 
+// Added: the ring's 512 KiB back to the heap while a level's opening cutscene
+// plays (no music then; MotS's biggest levels left the decoder short by a few
+// hundred KiB). stdMci_Play takes it again.
+void stdMci_GcReleaseRing(void)
+{
+    if (!stdMci_bInitted || !gcMusic_pRing) return;
+    stdMci_Stop();
+    LWP_MutexLock(gcMusic_mtx);
+    free(gcMusic_pRing);
+    gcMusic_pRing = NULL;
+    LWP_MutexUnlock(gcMusic_mtx);
+}
+
 int stdMci_Play(uint8_t trackFrom, uint8_t trackTo)
 {
     if (!stdMci_bInitted) return 0;
     stdMci_Stop();
+    if (!gcMusic_pRing) {
+        uint8_t* pRing = (uint8_t*)memalign(32, GCMUSIC_RING);
+        if (!pRing) return 0; // (no room yet: the mixer asks again later)
+        LWP_MutexLock(gcMusic_mtx);
+        gcMusic_pRing = pRing;
+        LWP_MutexUnlock(gcMusic_mtx);
+    }
 
     LWP_MutexLock(gcMusic_mtx);
     gcMusic_trackCur = trackFrom;

@@ -34,6 +34,11 @@ const char* gcCard_GetLastError(void);
 // Whether save slot n (1..GCCARD_MAX_SLOTS) holds a game.
 int gcCard_GetSlotInfo(int n, int* pbUsed);
 
+// The start of save slot n (its sithGamesave_Header), without unpacking the
+// whole save (which needs ~380 KiB free). Returns 0 if the slot is empty or its
+// header can't be read.
+int gcCard_GetSlotHeader(int n, void* pOut, unsigned int len);
+
 // Whether the card has room for one more saved game.
 int gcCard_CanCreateSave(void);
 

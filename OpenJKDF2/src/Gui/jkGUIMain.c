@@ -20,8 +20,8 @@
 #include "Gui/jkGUISetup.h"
 #include "Gui/jkGUISaveLoad.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcCard.h"
-#include "Platform/GameCube/gcNet.h"
+#include "gcCard.h"
+#include "gcNet.h"
 #endif
 #include "Gui/jkGUIMods.h"
 #include "Win95/stdComm.h"
@@ -137,6 +137,20 @@ static void jkGuiMain_GcShow(void)
     }
 
     int clicked;
+#ifdef GC_AUTOLOAD_SLOT
+    {
+        static int bTried = 0; // test builds: load this memory card save once, from the menu
+        sithGamesave_Header h;
+        if (!bTried && (bTried = 1, gcCard_GetSlotHeader(GC_AUTOLOAD_SLOT, &h, sizeof(h)))) {
+            char fname[32];
+            stdString_snprintf(fname, sizeof(fname), JKSAVE_FORMATSTR, GC_AUTOLOAD_SLOT);
+            stdPlatform_Printf("jkGuiMain: loading save slot %d (%s)\n", GC_AUTOLOAD_SLOT, h.jklName);
+            jkMain_sub_4034D0(h.episodeName, fname, h.jklName, h.saveName);
+            jkGui_SetModeGame();
+            return;
+        }
+    }
+#endif
 #ifdef GC_MP_TEST_join
     {
         static int bTried = 0; // multiplayer test: join once, straight from the menu
@@ -464,6 +478,21 @@ void jkGuiMain_PopulateCutscenes(Darray *list, jkGuiElement *element)
         stdFnames_CopyShortName(key, 64, v3); // TODO aaaaaaa ??? disassembly was wrong?
         jkGuiTitle_sub_4189A0(key);
         v5 = jkStrings_GetUniString(key);
+        // Added: no title for it (JK's intro in a MotS profile): a NULL string
+        // ends the list, so nothing after it showed. Its file name instead.
+        if ( !v5 )
+        {
+            char fpath[64];
+            snprintf(fpath, sizeof(fpath), "video%c%s", '\\', v3);
+            if ( !util_FileExists(fpath) )
+            {
+                // Not on this disc (profiles made before had JK's intro in MotS).
+                JK_FREE(v3);
+                v2 += 32;
+                continue;
+            }
+            v5 = jkStrings_GetUniStringWithFallback(key);
+        }
         jkGuiRend_DarrayReallocStr(list, v5, (intptr_t)v3);
         v2 += 32;
     }

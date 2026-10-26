@@ -74,7 +74,7 @@ int sithMulti_ProcessChat(SithMessage *pMsg)
     NETMSG_POPSTR(v5, arg2);
     v5[arg2 + 1] = 0;
 
-    if ( arg1 < 0 )
+    if ( arg1 < 0 || arg1 >= JKPLAYER_NUM_INFOS ) // Added: bounds
         jk_snwprintf(sithMulti_chatWStrTmp, 256, u"%S", v5); // Added: char -> wchar
     else
         jk_snwprintf(sithMulti_chatWStrTmp, 256, u"%s says '%S'", jkPlayer_playerInfos[arg1].player_name, v5); // Added: char -> wchar
@@ -121,6 +121,21 @@ HRESULT sithMulti_CreatePlayer(const char16_t *a1, const char16_t *a2, const cha
     return result;
 }
 
+// Added: the level's cogs start before a multiplayer game has a local player
+// (the host gets slot 0 in sithMulti_StartupServer, a client its slot once
+// welcomed). The weapon cogs keep GetLocalPlayerThing() from their startup:
+// MotS's saber cog checks that player to accept being selected, so with none
+// the player had no weapon and crashed picking one. Start them again once the
+// local player is known. (Booting straight into a hosted level hid it: a local
+// player was left over from the boot.)
+static void sithMulti_RestartWeaponCogs(void)
+{
+    for (int i = 0; i < SITHBIN_NUMBINS; i++) {
+        if ( (sithInventory_g_aTypes[i].flags & ITEMINFO_WEAPON) && sithInventory_g_aTypes[i].cog )
+            sithCog_SendMessage(sithInventory_g_aTypes[i].cog, SITH_MESSAGE_STARTUP, SENDERTYPE_SYSTEM, 0, 0, 0, 0);
+    }
+}
+
 int sithMulti_StartupServer()
 {
     sithNet_MultiModeFlags = sithMulti_multiModeFlags;
@@ -139,6 +154,7 @@ int sithMulti_StartupServer()
     sithPlayer_ShowPlayer(0, stdComm_dplayIdSelf);
     sithPlayer_SetLocalPlayer(0);
     sithPlayer_ResetPalEffects();
+    sithMulti_RestartWeaponCogs(); // Added
 
     // Added: dedicated server
     if (jkGuiNetHost_bIsDedicated) {
@@ -257,7 +273,13 @@ int sithMulti_SendJoinRequest(int sendto_id)
     NETMSG_START;
 
     NETMSG_PUSHSTR(sithWorld_g_pCurrentWorld->map_jkl_fname, 0x20);
+#ifdef TARGET_GAMECUBE
+    // Added: the multiplayer character's name; the profile is fixed on the
+    // GameCube ("Kyle" / "Mara"), so every player was called that.
+    NETMSG_PUSHWSTR(jkPlayer_name[0] ? jkPlayer_name : jkPlayer_playerShortName, 0x10);
+#else
     NETMSG_PUSHWSTR(jkPlayer_playerShortName, 0x10);
+#endif
     NETMSG_PUSHWSTR(sithMulti_name, 0x20);
     NETMSG_PUSHU32(sithNet_checksum);
 
@@ -585,6 +607,8 @@ int sithMulti_ProcessWelcome(SithMessage *pMsg)
 
     v1 = NETMSG_POPS32();
     v2 = NETMSG_POPS32();
+    if ( v1 < 0 || v1 >= JKPLAYER_NUM_INFOS ) // Added: a slot of the array
+        return 0;
     NETMSG_POPWSTR(jkPlayer_playerInfos[v1].player_name, 0x10);
 
     sithMulti_verbosePrintf("sithMulti_ProcessWelcome %x %x %x\n", v1, v2, stdComm_dplayIdSelf);
@@ -628,6 +652,27 @@ int sithMulti_ProcessWelcome(SithMessage *pMsg)
     sithPlayer_ShowPlayer(v1, v2);
     sithPlayer_SetLocalPlayer(v1); // sets playerThingIdx and info
     sithPlayer_ResetPalEffects();
+    sithMulti_RestartWeaponCogs(); // Added: a client learns its player only now
+    // Added: MotS gives the multiplayer weapons in the class cog's "newplayer"
+    // (kyle_m.cog init_multi_kyle), on the thing its "startup" took from
+    // GetLocalPlayerThing. Both ran when the level opened (sithMain_Open), when
+    // this client's local player was still slot 0: the host's. So the one who
+    // joined started with nothing. Run them again on this client's own thing.
+    if ( Main_bMotsCompat && sithPlayer_g_pLocalPlayerThing )
+    {
+        // Its first-person info (POV model, saber): not linked yet when this
+        // player's slot was past jkPlayer_maxPlayers at level start, and the
+        // weapon cogs below use it (a NULL playerInfo crashed in jkPlayPOVKey).
+        if ( !sithPlayer_g_pLocalPlayerThing->playerInfo && v1 < NUM_JKPLAYER_THINGS )
+        {
+            playerThings[v1].actorThing = sithPlayer_g_pLocalPlayerThing;
+            sithPlayer_g_pLocalPlayerThing->playerInfo = &playerThings[v1];
+            sithPlayer_g_pLocalPlayerThing->flags |= SITH_TF_RENDERWEAPON;
+        }
+        if ( sithPlayer_g_pLocalPlayerThing->pCog )
+            sithCog_SendMessage(sithPlayer_g_pLocalPlayerThing->pCog, SITH_MESSAGE_STARTUP, SENDERTYPE_SYSTEM, 0, 0, 0, 0);
+        sithPlayer_NewPlayer(sithPlayer_g_pLocalPlayerThing);
+    }
     sithEvent_RegisterTask(2, sithMulti_CheckPlayers, sithNet_tickrate, 1);
     sithMessage_StopProcessMessages();
     return 1;
@@ -880,7 +925,9 @@ int sithMulti_ProcessSyncPlayers(SithMessage *pMsg)
     v4 = NETMSG_POPS16();
 
     sithNet_MultiModeFlags = v2;
-    jkPlayer_maxPlayers = v4; // TODO cap this to JKPLAYER_NUM_INFOS?
+    if ( v4 > JKPLAYER_NUM_INFOS ) // Added: the player array's size (11 on the consoles)
+        v4 = JKPLAYER_NUM_INFOS;
+    jkPlayer_maxPlayers = v4;
     for (v3 = 0; v3 < jkPlayer_maxPlayers; v3++)
     {
         v6 = &jkPlayer_playerInfos[v3];

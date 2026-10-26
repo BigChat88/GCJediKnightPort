@@ -501,6 +501,8 @@ int32_t sithCogExec_PopVector(sithCog *pCog, rdVector3* vec)
             vec->z = tmpvec[2];
             SITH_FREE((void*)tmp.dataAsPtrs[0]);
         }
+        else
+            _memset(vec, 0, sizeof(*vec)); // Added: was left as it was (stack garbage)
 #endif
         return 1;
     }

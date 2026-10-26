@@ -3,7 +3,7 @@
 A port of **Star Wars Jedi Knight: Dark Forces II** and its expansion
 **Mysteries of the Sith** to the Nintendo GameCube, built on
 [OpenJKDF2](https://github.com/shinyquagsire23/OpenJKDF2) (the open-source
-reimplementation of the Jedi Knight engine) and devkitPPC/libogc, plus a tool
+reimplementation of the Jedi Knight engine) and devkitPPC/libogc2, plus a tool
 that turns your own copy of the games into bootable disc images.
 
 No copyrighted game data is in this repository. You supply your own CD images;
@@ -62,8 +62,8 @@ memory in the levels.
 | Z | Secondary fire |
 | A | Jump |
 | X | Crouch |
-| B | Activate (doors, switches) |
-| Y | Use inventory item |
+| B | Activate (doors, switches); with nothing in front, use the selected item |
+| Y | Lightsaber (hold 1 s: first / third person view) |
 | L | Use Force power |
 | D-pad left/right | Previous / next weapon |
 | D-pad up / down | Next Force power / next item |
@@ -91,5 +91,11 @@ used during development (needs both Docker images).
 
 * [OpenJKDF2](https://github.com/shinyquagsire23/OpenJKDF2) by shinyquagsire23
   and contributors -- the engine this port is built on.
-* [devkitPro](https://devkitpro.org/) -- devkitPPC, libogc and libfat.
+* [devkitPro](https://devkitpro.org/) -- devkitPPC.
+* [libogc2](https://github.com/extremscorner/libogc2) by Extrems -- the GameCube
+  library the port runs on (libdvm, libfat, the network adapters).
+
+## AI Note
+
+The application was developed using AI. I'm just an enthusiast who wanted to create interesting projects. In this case, how it was achieved is not relevant to me.
 

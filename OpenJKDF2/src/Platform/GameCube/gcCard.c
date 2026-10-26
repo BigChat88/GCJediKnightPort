@@ -37,11 +37,31 @@
 #include <gccore.h>
 #include <ogc/lwp_watchdog.h>
 #include <zlib.h>
-#include <aesndlib.h>
+#include "gcAesndlib.h"
 #include <malloc.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+// libogc2's card API: the work area size has another name, the block count is a
+// u16 and there is no CARD_GetFreeBlocks (counted here from the directory: the
+// card's blocks minus the 5 system blocks minus the files').
+#define CARD_WORKAREA_SIZE CARD_WORKAREA
+static s32 CARD_GetFreeBlocks(s32 chn, u16* pFree)
+{
+    u16 total = 0;
+    s32 res = CARD_GetBlockCount(chn, &total);
+    if (res < 0) return res;
+    u32 sector = 8192;
+    CARD_GetSectorSize(chn, &sector);
+    u32 used = 5;
+    card_dir dir;
+    for (s32 r = CARD_FindFirst(chn, &dir, true); r >= 0; r = CARD_FindNext(&dir))
+        used += (dir.filelen + sector - 1) / sector;
+    *pFree = total > used ? (u16)(total - used) : 0;
+    return 0;
+}
+typedef u16 gcCardBlockCount;
 
 #define GCCARD_GAMECODE   "OJKE"
 #define GCCARD_COMPANY    "OJ"
@@ -91,6 +111,12 @@ static int      gcCard_aSlotOldLayout[GCCARD_MAX_SLOTS + 1]; // rewrite to get t
 // deleted only once that write has worked, so a write that fails half way (card
 // pulled, power cut, a card error) never destroys the save that was there.
 static int      gcCard_aSlotAlt[GCCARD_MAX_SLOTS + 1];
+// Added: each slot's sithGamesave_Header, for the save / load lists. Reading it
+// by opening the slot unpacked the whole save (~380 KiB); mid-level, right after
+// a save, that failed for lack of memory and the slot went missing from the list
+// (and was offered as empty in the save menu, so a save went over it unasked).
+static u8       gcCard_aSlotHead[GCCARD_MAX_SLOTS + 1][sizeof(sithGamesave_Header)];
+static int      gcCard_aSlotHeadOk[GCCARD_MAX_SLOTS + 1];
 static u32      gcCard_saveBlocksEstimate = GCCARD_DEFAULT_SAVE_BLOCKS;
 static char     gcCard_szLastError[160] = "";  // why the last gcCard_Save failed
 
@@ -145,27 +171,25 @@ static void gcCard_SlotPath(int n, char* buf, size_t len)
 
 static int gcCard_bMountTried = 0;
 
-static void gcCard_MountCallback(s32 chn, s32 result)
-{
-}
-
-// Mounting a card that is still locked since power-on runs the unlock exchange
-// as a DSP task. That only completes while the DSP is free: once AESND's microcode
-// owns it, the task never runs and a synchronous CARD_Mount sleeps forever (real
-// hardware only; Dolphin's cards start unlocked). So this runs from gcSystem_Init
-// before the DSP is started, and polls with a timeout instead of CARD_Mount.
+// libogc2: probe the slot (is there a card, which size), then a plain CARD_Mount.
+// libogc2 unlocks a card even while the audio microcode owns the DSP, so libogc's
+// dance (mount before AESND starts, async + timeout) isn't needed;
+// it still runs early only because the saved video mode is read from the card.
 static s32 gcCard_MountSlot(int slot)
 {
-    s32 res = CARD_MountAsync(slot, gcCard_workArea, NULL, gcCard_MountCallback);
-    if (res < 0) return res;
+    s32 memSize = 0, sectorSize = 0, res;
     u64 start = gettime();
-    while ((res = CARD_GetErrorCode(slot)) == CARD_ERROR_BUSY) {
-        if (diff_msec(start, gettime()) > GCCARD_MOUNT_TIMEOUT_MS) {
-            printf("gcCard: slot %c did not answer\n", 'A' + slot);
-            return CARD_ERROR_BUSY;
-        }
-        VIDEO_WaitVSync();
+    // The slot may still be finding out what's in it.
+    while ((res = CARD_ProbeEx(slot, &memSize, &sectorSize)) == CARD_ERROR_BUSY
+           && diff_msec(start, gettime()) < GCCARD_MOUNT_TIMEOUT_MS)
+        usleep(10 * 1000);
+    if (res < 0) {
+        printf("gcCard: slot %c: no card (probe %d)\n", 'A' + slot, (int)res);
+        return res;
     }
+    res = CARD_Mount(slot, gcCard_workArea, NULL);
+    printf("gcCard: slot %c: %d Mbit card, sector %d, mount %d\n", 'A' + slot,
+           (int)memSize, (int)sectorSize, (int)res);
     return res;
 }
 
@@ -313,7 +337,7 @@ static s32 gcCard_WriteStream(const char* name, u32 fileLen, gcCardFillFn fill, 
         gcCard_SetError("preparing %s failed", name);
     }
     else if (res < 0) {
-        u32 cardBlocks = 0;
+        gcCardBlockCount cardBlocks = 0;
         CARD_GetBlockCount(gcCard_slot, &cardBlocks);
         gcCard_SetError("write %s error %d at block %u; card %u blocks, sector %u at %u, %u ms",
                         name, (int)res, off / gcCard_sectorSize - 1, cardBlocks,
@@ -602,6 +626,9 @@ static int gcCard_WriteSlot(int n, const gcDvdData* pData)
     u32 blocks = fileLen / gcCard_sectorSize;
     if (blocks > gcCard_saveBlocksEstimate) gcCard_saveBlocksEstimate = blocks;
     printf("gcCard: %s saved (%u -> %u bytes, %u blocks)\n", name, pData->size, compLen, blocks);
+    gcCard_aSlotHeadOk[n] = pData->size >= sizeof(gcCard_aSlotHead[n]);
+    if (gcCard_aSlotHeadOk[n])
+        memcpy(gcCard_aSlotHead[n], pData->chunks[0], sizeof(gcCard_aSlotHead[n]));
     return 1;
 }
 
@@ -724,6 +751,7 @@ static int gcCard_SyncSlots(void)
                     CARD_Delete(gcCard_slot, other); // a leftover copy, if any
                     gcCard_aSlotOnCard[n] = 0;
                     gcCard_aSlotAlt[n] = 0;
+                    gcCard_aSlotHeadOk[n] = 0;
                     printf("gcCard: %s deleted\n", name);
                 }
                 break;
@@ -749,6 +777,44 @@ static int gcCard_SyncSlots(void)
         }
     }
     return ok;
+}
+
+// Unpacks just the save's header from the start of its card file (buf[0..len)).
+static int gcCard_InflateHead(int n, const u8* buf, u32 len, u32 dataOff)
+{
+    if (len <= dataOff) return 0;
+    z_stream zs;
+    memset(&zs, 0, sizeof(zs));
+    if (inflateInit(&zs) != Z_OK) return 0;
+    zs.next_in = (Bytef*)(buf + dataOff);
+    zs.avail_in = len - dataOff;
+    zs.next_out = gcCard_aSlotHead[n];
+    zs.avail_out = sizeof(gcCard_aSlotHead[n]);
+    int z;
+    do z = inflate(&zs, Z_NO_FLUSH);
+    while (z == Z_OK && zs.avail_out && zs.avail_in);
+    inflateEnd(&zs);
+    return zs.avail_out == 0;
+}
+
+int gcCard_GetSlotHeader(int n, void* pOut, unsigned int len)
+{
+    if (n < 1 || n > GCCARD_MAX_SLOTS || len > sizeof(gcCard_aSlotHead[n])) return 0;
+    char path[64];
+    gcCard_SlotPath(n, path, sizeof(path));
+    gcDvdData data;
+    switch (gcDvd_SlotState(path, &data)) {
+        case GCDVD_SLOT_CHANGED: // written, not on the card yet: the copy in RAM
+            if (data.size < len) return 0;
+            memcpy(pOut, data.chunks[0], len);
+            return 1;
+        case GCDVD_SLOT_SAVED:
+            if (!gcCard_aSlotHeadOk[n]) return 0;
+            memcpy(pOut, gcCard_aSlotHead[n], len);
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 int gcCard_GetSlotInfo(int n, int* pbUsed)
@@ -855,6 +921,10 @@ void gcCard_Init(void)
     gcDvd_SetWriteCallback(gcCard_OnOverlayWrite);
     gcDvd_SetSlotLoader(gcCard_LoadSlot);
 
+    // The early attempt (gcCard_EarlyMount) ran before the log was up: if it
+    // failed, once more where its messages show.
+    if (gcCard_slot < 0)
+        gcCard_bMountTried = 0;
     if (!gcCard_MountAny()) {
         printf("gcCard: no memory card, saves will not persist\n");
         return;
@@ -911,16 +981,21 @@ void gcCard_Init(void)
         if (CARD_Open(gcCard_slot, name, &file) < 0) continue;
         // Size first: libogc's CARD_Read clobbers file.len.
         u32 blocks = (u32)file.len / gcCard_sectorSize;
-        // First sector: header, banner and (most of) the icon.
-        u8* hdr = (u8*)memalign(32, gcCard_sectorSize);
+        // First sectors: header, banner and icon, and the start of the save
+        // (for its header, see gcCard_aSlotHead).
+        u32 readLen = blocks < 3 ? blocks * gcCard_sectorSize : 3 * gcCard_sectorSize;
+        u8* hdr = readLen >= gcCard_sectorSize ? (u8*)memalign(32, readLen) : NULL;
         u32 h[4] = { 0, 0, 0, 0 };
         int bOldGfx = 1;
-        if (hdr && CARD_Read(&file, hdr, gcCard_sectorSize, 0) >= 0) {
+        if (hdr && CARD_Read(&file, hdr, readLen, 0) >= 0) {
             memcpy(h, hdr + 0x40, sizeof(h));
             u32 n1 = sizeof(gcCardGfx_banner);
             u32 n2 = gcCard_sectorSize - GCCARD_GFX_OFF - n1;
             bOldGfx = memcmp(hdr + GCCARD_GFX_OFF, GCCARD_BANNER, n1)
                       || memcmp(hdr + GCCARD_GFX_OFF + n1, GCCARD_ICON, n2);
+            if (h[0] == GCCARD_SLOT_MAGIC || h[0] == GCCARD_SLOT_MAGIC_V1)
+                gcCard_aSlotHeadOk[n] = gcCard_InflateHead(n, hdr, readLen,
+                                                           h[0] == GCCARD_SLOT_MAGIC_V1 ? 0x50 : GCCARD_DATA_OFF);
         }
         CARD_Close(&file);
         free(hdr);

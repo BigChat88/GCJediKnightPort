@@ -1,7 +1,7 @@
 #!/bin/bash
-# Build OpenJKDF2 for the Nintendo GameCube (devkitPPC + libogc).
+# Build OpenJKDF2 for the Nintendo GameCube (devkitPPC + libogc2).
 #
-# Needs devkitPro with the GameCube toolchain. Without a local install, run it in
+# Needs devkitPro with the GameCube toolchain and libogc2. Without them, run it in
 # the Docker image from packaging/gamecube:
 #
 #   docker build -t openjkdf2-gamecube packaging/gamecube

@@ -1259,7 +1259,7 @@ void stdPlatform_PrintHeapStats()
 
 #ifdef TARGET_GAMECUBE
 #include <malloc.h>
-#include "Platform/GameCube/gcOgc.h"
+#include "gcOgc.h"
 
 // Added: heap usage (newlib malloc arena) and what's left of MEM1 for it to grow into.
 void stdPlatform_PrintHeapStats()
@@ -1389,6 +1389,13 @@ static gcOwnSlot* stdPlatform_OwnFind(void* p)
         if (stdPlatform_pOwn[h].p == p) return &stdPlatform_pOwn[h];
     }
     return NULL;
+}
+
+// The engine file that allocated a block, or NULL (gcMemWrap's heap layout).
+const char* stdPlatform_GcOwnerFile(void* p)
+{
+    gcOwnSlot* s = stdPlatform_OwnFind(p);
+    return (s && s->idx >= 0) ? stdPlatform_aAllocTrack[s->idx].pFile : NULL;
 }
 
 static void stdPlatform_Charge(int32_t idx, int32_t bytes, int32_t count)

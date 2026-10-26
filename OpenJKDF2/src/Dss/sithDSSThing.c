@@ -1087,7 +1087,7 @@ int sithDSSThing_ProcessFullDescription(SithMessage *pMsg)
             
             playerInfo_idx = NETMSG_POPS32();
             
-            if ( playerInfo_idx >= 0 && playerInfo_idx < 32 )
+            if ( playerInfo_idx >= 0 && playerInfo_idx < JKPLAYER_NUM_INFOS ) // Added: the array's size, not 32
             {
                 thing->actorParams.pPlayer = &jkPlayer_playerInfos[playerInfo_idx];
                 thing->actorParams.pPlayer->palEffectsIdx1 = NETMSG_POPS32();

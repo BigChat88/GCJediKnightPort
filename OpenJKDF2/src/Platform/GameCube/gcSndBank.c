@@ -19,7 +19,7 @@
 #include "General/stdString.h"
 #include "jk.h"
 
-#include "Platform/GameCube/gcOgc.h"
+#include "gcOgc.h"
 #include <ogc/lwp_watchdog.h>
 #include <string.h>
 #include <ctype.h>

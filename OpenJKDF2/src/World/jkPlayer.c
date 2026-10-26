@@ -92,6 +92,12 @@ int jkPlayer_bJankyPhysics = 0;
 jkPlayerInfo jkPlayer_aMotsInfos[NUM_JKPLAYER_THINGS] = {0};
 jkBubbleInfo jkPlayer_aBubbleInfo[NUM_JKPLAYER_THINGS] = {0};
 int jkPlayer_personality = 0;
+#ifdef TARGET_GAMECUBE
+// Added: MotS character format of the last character read or made: 1 = ranked
+// Jedi (Jedi Knight format), 0 = personalities. Kept in the .mpc ("gcjedi:", after
+// everything the original reads), so a game lists only characters of its format.
+int jkPlayer_gcbJediFormat = 0;
+#endif
 flex_t jkPlayer_aMultiParams[0x100];
 #endif
 
@@ -506,7 +512,8 @@ void jkPlayer_CreateConf(char16_t *name)
 LABEL_7:
         if ( jkPlayer_setNumCutscenes < 32 )
         {
-            _strncpy(&jkPlayer_cutscenePath[32 * jkPlayer_setNumCutscenes], "01-02a.smk", 0x1Fu);
+            // Added: MotS's intro (the one Main plays at boot); JK's isn't on its disc.
+            _strncpy(&jkPlayer_cutscenePath[32 * jkPlayer_setNumCutscenes], Main_bMotsCompat ? "jkmintro.san" : "01-02a.smk", 0x1Fu);
             jkPlayer_cutscenePath[32 * jkPlayer_setNumCutscenes + 31] = 0; // TODO macro 
             jkPlayer_aCutsceneVal[jkPlayer_setNumCutscenes] = 1;
             jkPlayer_setNumCutscenes = jkPlayer_setNumCutscenes + 1;
@@ -521,7 +528,7 @@ LABEL_7:
         int count = 0;
         while ( 1 )
         {
-            if ( !_memcmp(pathIter, "01-02a.smk", 0xBu) )
+            if ( !__strcmpi(pathIter, Main_bMotsCompat ? "jkmintro.san" : "01-02a.smk") )
                 break;
             ++count;
             pathIter += 32;
@@ -1365,6 +1372,17 @@ int jkPlayer_MPCParse(jkPlayerMpcInfo *info, SithPlayer* unk, char16_t *fname, c
             jkPlayer_MPCBinRead();
         }
         info->jediRank = jkPlayer_GetJediRank();
+#ifdef TARGET_GAMECUBE
+        // Added: the format (see jkPlayer_gcbJediFormat). Characters saved before
+        // it was kept: personality characters are always made rank 7.
+        jkPlayer_gcbJediFormat = (jkPlayer_personality == 1 && info->jediRank != 7);
+        if ( Main_bMotsCompat && hasBins && stdConffile_ReadLine() )
+        {
+            int bJedi;
+            if ( _sscanf(stdConffile_g_aLine, "gcjedi: %d", &bJedi) == 1 )
+                jkPlayer_gcbJediFormat = bJedi != 0;
+        }
+#endif
         stdConffile_Close();
 
         
@@ -1408,6 +1426,10 @@ int jkPlayer_MPCWrite(SithPlayer* unk, char16_t *mpcName, char16_t *playerName)
         }
 
         v4 = jkPlayer_MPCBinWrite();
+#ifdef TARGET_GAMECUBE
+        if (Main_bMotsCompat && v4) // Added: see jkPlayer_gcbJediFormat
+            stdConffile_Printf("gcjedi: %d\n", jkPlayer_gcbJediFormat);
+#endif
         stdConffile_CloseWrite();
         return v4;
     }

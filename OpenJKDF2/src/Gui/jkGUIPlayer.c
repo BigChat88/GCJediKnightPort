@@ -360,7 +360,7 @@ void jkGuiPlayer_ShowNewPlayer(int a1)
 }
 
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcGame.h"
+#include "gcGame.h"
 
 // Added: the GameCube has a single, fixed profile: select it, creating it on the
 // first boot (saves and settings live in its folder, see gcCard).

@@ -21,9 +21,9 @@
 
 #ifdef STDSOUND_GAMECUBE
 
-#include "Platform/GameCube/gcOgc.h"
-#include "Platform/GameCube/gcVoice.h"
-#include <aesndlib.h>
+#include "gcOgc.h"
+#include "gcVoice.h"
+#include "gcAesndlib.h"
 #include <ogc/lwp_watchdog.h>
 #include <malloc.h>
 #include <stdio.h>
@@ -261,6 +261,7 @@ static stdSound_buffer_t* stdSound_pStreamOwner = NULL;
 // by skipping that much audio once data arrives, instead of shifting all later
 // audio behind the picture.
 static volatile uint32_t stdSound_silenceDebt = 0;
+static uint8_t           stdSound_silenceByte = 0; // 0x80 for unsigned 8-bit audio
 static volatile uint32_t stdSound_silenceTotal = 0;
 
 // Playback clock of the stream (see stdSound_GetStreamClockUs): chunks handed to
@@ -290,9 +291,14 @@ static void stdSound_StreamFeed(AESNDPB* pb)
     if (first) memcpy(chunk, stdSound_pRing + r, first);
     if (give > first) memcpy(chunk + first, stdSound_pRing, give - first);
     if (give < GCSND_STREAM_CHUNK) {
-        memset(chunk + give, 0, GCSND_STREAM_CHUNK - give);
-        stdSound_silenceDebt += GCSND_STREAM_CHUNK - give;
-        stdSound_silenceTotal += GCSND_STREAM_CHUNK - give;
+        memset(chunk + give, stdSound_silenceByte, GCSND_STREAM_CHUNK - give);
+        // (Not owed for the chunk primed before the voice starts: the cutscene
+        // hands over less than a chunk at a time, and skipping it cut off the
+        // start of its audio.)
+        if (stdSound_chunksFed) {
+            stdSound_silenceDebt += GCSND_STREAM_CHUNK - give;
+            stdSound_silenceTotal += GCSND_STREAM_CHUNK - give;
+        }
     }
     stdSound_ringR += give;
 
@@ -363,12 +369,12 @@ static void stdSound_StreamQueue(stdSound_buffer_t* owner, stdSound_buffer_t* ch
     gcSample* s = (gcSample*)chunk->pSample;
     if (!s || !s->bytes) return;
 
-    if (!stdSound_pRing) {
-        stdSound_pRing = (uint8_t*)malloc(GCSND_STREAM_RING);
-        if (!stdSound_aChunks[0]) stdSound_aChunks[0] = (uint8_t*)memalign(32, GCSND_STREAM_CHUNK);
-        if (!stdSound_aChunks[1]) stdSound_aChunks[1] = (uint8_t*)memalign(32, GCSND_STREAM_CHUNK);
-        if (!stdSound_pRing || !stdSound_aChunks[0] || !stdSound_aChunks[1]) return;
-    }
+    // (All three checked every time: one that failed is tried again, and the voice
+    // never starts without its chunks.)
+    if (!stdSound_pRing) stdSound_pRing = (uint8_t*)malloc(GCSND_STREAM_RING);
+    if (!stdSound_aChunks[0]) stdSound_aChunks[0] = (uint8_t*)memalign(32, GCSND_STREAM_CHUNK);
+    if (!stdSound_aChunks[1]) stdSound_aChunks[1] = (uint8_t*)memalign(32, GCSND_STREAM_CHUNK);
+    if (!stdSound_pRing || !stdSound_aChunks[0] || !stdSound_aChunks[1]) return;
 
     // Drop the chunk if the ring is full (the cutscene runs ahead of the audio).
     uint32_t len = (uint32_t)s->bytes;
@@ -387,6 +393,7 @@ static void stdSound_StreamQueue(stdSound_buffer_t* owner, stdSound_buffer_t* ch
         stdSound_chunksFed = 0;
         stdSound_streamStartUs = Linux_TimeUs();
         stdSound_streamBytesPerSec = chunk->nSamplesPerSec * (chunk->bStereo ? 2 : 1) * (chunk->bitsPerSample / 8);
+        stdSound_silenceByte = chunk->bitsPerSample == 8 ? 0x80 : 0;
         AESND_SetVoiceFormat(stdSound_pStreamVoice, stdSound_VoiceFormat(chunk));
         AESND_SetVoiceFrequency(stdSound_pStreamVoice, (f32)chunk->nSamplesPerSec);
         u16 vol = (u16)(stdMath_Clamp(owner->vol, 0.0, 1.0) * GCSND_VOLUME_MAX);
@@ -407,6 +414,11 @@ int stdSound_Startup()
     if (!stdSound_bReady) {
         // AESND_Init() already ran in gcSystem_Init (it must precede the ARAM setup).
         AESND_Pause(false);
+        // The cutscene stream's two DSP chunks, kept for good: taken now, at the
+        // start of the heap. (At the first cutscene they landed among a level's
+        // data and stayed there, splitting its memory once the level was gone.)
+        if (!stdSound_aChunks[0]) stdSound_aChunks[0] = (uint8_t*)memalign(32, GCSND_STREAM_CHUNK);
+        if (!stdSound_aChunks[1]) stdSound_aChunks[1] = (uint8_t*)memalign(32, GCSND_STREAM_CHUNK);
         stdSound_bReady = 1;
         stdPlatform_Printf("stdSound: AESND ready\n");
     }

@@ -1,7 +1,7 @@
 #include "jkMain.h"
 #include "General/stdConffile.h"
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcStats.h"
+#include "gcStats.h"
 #endif
 
 #include "../jk.h"

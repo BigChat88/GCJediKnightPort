@@ -1,5 +1,5 @@
 #ifdef TARGET_GAMECUBE
-#include "Platform/GameCube/gcStats.h"
+#include "gcStats.h"
 #endif
 #include "sithMain.h"
 

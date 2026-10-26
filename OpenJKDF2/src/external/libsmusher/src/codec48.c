@@ -13,6 +13,7 @@ void codec48_destroy(smush_ctx* parent_ctx)
     if (!ctx) return;
 
     free(ctx->delta_bufs);
+    free(ctx->delta_bufs2);
     free(ctx);
 
     parent_ctx->c48_ctx = NULL;
@@ -37,21 +38,27 @@ void codec48_proc(smush_ctx* parent_ctx, const uint8_t* data, size_t data_len)
         // Added: size the delta buffers to the movie (MotS level cutscenes are
         // 640x350) instead of a fixed 640x480, with 64 rows of slack at both
         // ends for motion vectors that point outside the frame.
-        // Zeroed slack before, between and after the two buffers: motion vectors
-        // that point outside the frame must read zeros, not the other buffer's
-        // pixels (that left stuck colour blocks in 640x350 movies).
+        // Zeroed slack before and after each buffer: motion vectors that point
+        // outside the frame must read zeros, not the other buffer's pixels (that
+        // left stuck colour blocks in 640x350 movies). One block per buffer:
+        // two ~300 KiB pieces are easier to find than one of ~570 KiB after a
+        // big level loads (the decoder only uses the distance between them).
         ctx->frame_size = (size_t)ctx->pitch * ctx->block_y * 8;
         size_t slack = (size_t)ctx->pitch * 64;
-        ctx->delta_bufs_size = (ctx->frame_size*2) + slack*3;
+        ctx->delta_bufs_size = ctx->frame_size + slack*2;
         uint8_t* buf = (uint8_t*)smush_alloc(ctx->delta_bufs_size);
-        if (!buf) {
+        uint8_t* buf2 = buf ? (uint8_t*)smush_alloc(ctx->delta_bufs_size) : NULL;
+        if (!buf2) {
+            free(buf);
             free(ctx);
             return;
         }
         memset(buf, 0, ctx->delta_bufs_size);
+        memset(buf2, 0, ctx->delta_bufs_size);
         ctx->delta_bufs = buf;
+        ctx->delta_bufs2 = buf2;
         ctx->delta_buf[0] = buf + slack;
-        ctx->delta_buf[1] = ctx->delta_buf[0] + ctx->frame_size + slack;
+        ctx->delta_buf[1] = buf2 + slack;
         parent_ctx->c48_ctx = ctx;
     }
 
@@ -65,6 +72,7 @@ void codec48_proc(smush_ctx* parent_ctx, const uint8_t* data, size_t data_len)
     // bites a movie that loops its sequence back to 0 without a teardown.
     if (seq_num == 0) {
         memset(ctx->delta_bufs, 0, ctx->delta_bufs_size);
+        memset(ctx->delta_bufs2, 0, ctx->delta_bufs_size);
     }
 
     smush_debug("  Codec 48:\n");
@@ -132,7 +140,16 @@ void codec48_proc(smush_ctx* parent_ctx, const uint8_t* data, size_t data_len)
         }
     }
     */
-    memcpy(parent_ctx->framebuffer, ctx->delta_buf[ctx->cur_buf], ctx->pitch * ctx->height);
+    // Added: shown straight from the delta buffer when its rows are the frame's
+    // (pitch == width), instead of a copy into a 640x480 frame buffer.
+    if (ctx->pitch == ctx->width && ctx->pitch * ctx->height <= 640*480) {
+        parent_ctx->video = ctx->delta_buf[ctx->cur_buf];
+        parent_ctx->video_size = ctx->pitch * ctx->height;
+    }
+    else if (smush_framebuffer(parent_ctx)) {
+        memcpy(parent_ctx->framebuffer, ctx->delta_buf[ctx->cur_buf], ctx->pitch * ctx->height);
+        parent_ctx->video = NULL;
+    }
 
     ctx->last_seq_num = seq_num;
 }

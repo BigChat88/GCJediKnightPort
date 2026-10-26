@@ -27,8 +27,9 @@ typedef struct codec48_ctx
 
     uint8_t cur_buf;
 
-    uint8_t* delta_bufs;
-    size_t delta_bufs_size;
+    uint8_t* delta_bufs;      // Added: one block per buffer, slack on both sides
+    uint8_t* delta_bufs2;
+    size_t delta_bufs_size;   // (each)
     uint8_t* delta_buf[2];
 
     uint16_t last_seq_num;

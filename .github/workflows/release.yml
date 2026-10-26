@@ -20,9 +20,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      # devkitPPC r50 / libogc 3.1.0 -- the toolchain the port is tested with.
-      # Bump deliberately: libogc changes have bitten audio and the memory card.
-      image: devkitpro/devkitppc@sha256:44cb1a920e1ec3ec7c06767493c3b85f8d643d6137cc4661f0201895ac6e4967
+      # devkitPPC + libogc2 (Extrems' fork of libogc), as in packaging/gamecube/Dockerfile.
+      # Pin it to a digest once a version has been tested on hardware: library
+      # changes have bitten audio and the memory card before.
+      image: ghcr.io/extremscorner/libogc2:latest
 
     steps:
       - name: Install build deps

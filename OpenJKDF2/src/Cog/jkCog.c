@@ -258,6 +258,27 @@ void jkCog_EndLevel(sithCog *ctx)
     }
 }
 
+// Added: the thing's jkPlayerInfo, assigned the way jkCog_SetWeaponMesh does
+// (MotS) if it has none yet. A player who just joined a multiplayer game has
+// none while its weapon cogs first run (the welcome's "newplayer"): reading
+// playerInfo->povModel through NULL crashed on the console.
+static jkPlayerInfo* jkCog_GcPlayerInfo(SithThing* pThing)
+{
+    if (!pThing || (pThing->type != SITH_THING_ACTOR && pThing->type != SITH_THING_PLAYER))
+        return NULL;
+    if (!pThing->playerInfo) {
+        if (pThing == sithPlayer_g_pLocalPlayerThing && playerThingIdx >= 0 && playerThingIdx < NUM_JKPLAYER_THINGS) {
+            // The local player's own info: the first-person weapon is drawn from it.
+            playerThings[playerThingIdx].actorThing = pThing;
+            pThing->playerInfo = &playerThings[playerThingIdx];
+            pThing->flags |= SITH_TF_RENDERWEAPON;
+        }
+        else
+            jkPlayer_FUN_00404fe0(pThing);
+    }
+    return pThing->playerInfo;
+}
+
 void jkCog_SetPovModel(sithCog *ctx)
 {
     rdModel3 *model3; // edi
@@ -269,8 +290,9 @@ void jkCog_SetPovModel(sithCog *ctx)
     {
         if ( model3 )
         {
-            if ( actorThing->type == SITH_THING_ACTOR || actorThing->type == SITH_THING_PLAYER )
-                jkPlayer_SetPovModel(actorThing->playerInfo, model3);
+            jkPlayerInfo* pInfo = jkCog_GcPlayerInfo(actorThing);
+            if ( pInfo )
+                jkPlayer_SetPovModel(pInfo, model3);
         }
     }
 }
@@ -281,7 +303,6 @@ void jkCog_PlayPovKey(sithCog *ctx)
     int v2; // edi
     rdKeyframe *keyframe; // ebx
     SithThing *actorThing; // eax
-    int v5; // ecx
     rdPuppet *v6; // eax
     int v7; // eax
 
@@ -289,10 +310,8 @@ void jkCog_PlayPovKey(sithCog *ctx)
     v2 = sithCogExec_PopInt(ctx);
     keyframe = sithCogExec_PopKeyframe(ctx);
     actorThing = sithCogExec_PopThing(ctx);
-    if ( actorThing
-      && keyframe
-      && ((v5 = actorThing->type, v5 == SITH_THING_ACTOR) || v5 == SITH_THING_PLAYER)
-      && (v6 = actorThing->playerInfo->povModel.puppet) != 0 )
+    jkPlayerInfo* pInfo = keyframe ? jkCog_GcPlayerInfo(actorThing) : NULL;
+    if ( pInfo && (v6 = pInfo->povModel.puppet) != 0 )
     {
         v7 = sithPuppet_PlayKey(v6, keyframe, v2, v2 + 2, v1, 0);
         sithCogExec_PushInt(ctx, v7);
@@ -316,9 +335,10 @@ void jkCog_StopPovKey(sithCog *ctx)
 
     if ( actorThing )
     {
-        if ( actorThing->type == SITH_THING_ACTOR || actorThing->type == SITH_THING_PLAYER )
+        jkPlayerInfo* pInfo = jkCog_GcPlayerInfo(actorThing);
+        if ( pInfo )
         {
-            v5 = actorThing->playerInfo->povModel.puppet;
+            v5 = pInfo->povModel.puppet;
             if ( v5 && v2 >= 0 && v2 < 4 )
                 sithPuppet_StopKey(v5, v2, a1a);
         }
@@ -573,7 +593,7 @@ void jkCog_SetSaberInfo(sithCog *ctx)
 void jkCog_GetSaberSideMat(sithCog *ctx)
 {
     SithThing* pPlayerThing = sithCogExec_PopThing(ctx);
-    if (pPlayerThing->playerInfo) {
+    if (pPlayerThing && pPlayerThing->playerInfo) {
         sithCogExec_PushInt(ctx,((pPlayerThing->playerInfo->polyline).face.material)->id);
     }
     // TODO bugfix: push a -1??

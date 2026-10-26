@@ -67,6 +67,10 @@ static void jkGuiGcKeyboard_Build(void)
         jkGuiGcKeyboard_SetElement(e++, ELEMENT_TEXTBUTTON, 2000 + i, 2, kb_aKeyText[i],
                                    70 + col * 51, 150 + row * 48, 46, 40);
     }
+    // No symbol keys (. - _ ?): names and save names reject them, and a name
+    // refused that way was cleared without the field showing it.
+    for (int i = 26; i < 30; i++)
+        kb_aElements[2 + i].bIsVisible = 0;
     jkGuiGcKeyboard_SetElement(e++, ELEMENT_TEXTBUTTON, KB_ID_SHIFT,  2, u"a / A",  40,  355, 110, 36);
     jkGuiGcKeyboard_SetElement(e++, ELEMENT_TEXTBUTTON, KB_ID_SPACE,  2, u"Space",  165, 355, 110, 36);
     jkGuiGcKeyboard_SetElement(e++, ELEMENT_TEXTBUTTON, KB_ID_DELETE, 2, u"Delete", 290, 355, 110, 36);
@@ -102,7 +106,14 @@ static int jkGuiGcKeyboard_Key(jkGuiElement* pElement, jkGuiMenu* pMenu, int32_t
         case KB_ID_SHIFT:
             kb_bLower = !kb_bLower;
             jkGuiGcKeyboard_UpdateKeys();
-            jkGuiRend_Paint(pMenu);
+            // Each key over its own background: a plain repaint drew the lower
+            // case letters over the taller upper case ones, whose tops stayed.
+            // One flip for all of them (a forced redraw flips once per key).
+            for (int i = 0; i < KB_KEYS; i++) {
+                jkGuiRend_CopyVBuffer(pMenu, &kb_aElements[2 + i].rect);
+                jkGuiRend_UpdateAndDrawClickable(&kb_aElements[2 + i], pMenu, 0);
+            }
+            jkGuiRend_FlipAndDraw(pMenu, NULL);
             return 0;
         case KB_ID_SPACE:
             if (n < kb_maxLen) { kb_text[n] = u' '; kb_text[n + 1] = 0; }

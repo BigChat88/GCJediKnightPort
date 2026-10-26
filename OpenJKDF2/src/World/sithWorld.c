@@ -132,7 +132,7 @@ void sithWorld_UpdateLoadProgress(flex_t progress)
 #ifdef TARGET_GAMECUBE
 // Added: why the last level load failed, shown in the error dialog (hardware
 // failures can't be read from a log).
-#include "Platform/GameCube/gcDvd.h"
+#include "gcDvd.h"
 char sithWorld_gcLoadError[320] = "";
 extern uint32_t gcSystem_FreeBytes(void);
 extern uint32_t gcSystem_LargestFreeBytes(void);
