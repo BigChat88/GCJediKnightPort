@@ -162,7 +162,10 @@ static void gcCard_SlotFilename(int n, char* buf, size_t len)
 
 static void gcCard_SlotPath(int n, char* buf, size_t len)
 {
-    snprintf(buf, len, "%s/player/%s/save%04d.jks", gcGame_Root(), gcGame_Player(), n);  // the fixed profile
+    // The fixed profile; the game's own name for the file (JKSAVE_FORMATSTR):
+    // MotS saves are msavNNNN.jks, and with JK's name its saves never reached a slot.
+    snprintf(buf, len, gcGame_bMots ? "%s/player/%s/msav%04d.jks" : "%s/player/%s/save%04d.jks",
+             gcGame_Root(), gcGame_Player(), n);
 }
 
 // --- Mounting ----------------------------------------------------------------------
