@@ -77,6 +77,18 @@ void sithPlayer_Close()
     sithPlayer_g_pLocalPlayer = 0;
 }
 
+#ifdef TARGET_GAMECUBE
+// Added: the map's player start points, all of them (32 like the PC), apart
+// from the player slots: there are only JKPLAYER_NUM_INFOS of those here, and
+// the starts were taken from them. CTF maps list 16 arena starts first and the
+// 16 of the start room (team selection) after them, the arena ones masked off
+// (respawnMask): with 11 slots every start was masked, players appeared in the
+// arena at slot 0 and could never pick a team.
+rdMatrix34   sithPlayer_gcaSpawnOrient[SITHPLAYER_GC_MAX_SPAWNS];
+SithSector*  sithPlayer_gcaSpawnSector[SITHPLAYER_GC_MAX_SPAWNS];
+int          sithPlayer_gcNumSpawns = 0;
+#endif
+
 void sithPlayer_PlacePlayers(SithWorld *pWorld)
 {
     SithThing *v1; // eax
@@ -91,6 +103,18 @@ void sithPlayer_PlacePlayers(SithWorld *pWorld)
     v1 = pWorld->aThings;
     v2 = pWorld->numThings;
     v3 = 0;
+#ifdef TARGET_GAMECUBE
+    sithPlayer_gcNumSpawns = 0;
+    for (int t = 0; t < pWorld->numThingsLoaded && sithPlayer_gcNumSpawns < SITHPLAYER_GC_MAX_SPAWNS; t++)
+    {
+        SithThing* pStart = &pWorld->aThings[t];
+        if (pStart->type != SITH_THING_PLAYER) continue;
+        rdMatrix_Copy34(&sithPlayer_gcaSpawnOrient[sithPlayer_gcNumSpawns], &pStart->orient);
+        rdVector_Copy3(&sithPlayer_gcaSpawnOrient[sithPlayer_gcNumSpawns].scale, &pStart->position);
+        sithPlayer_gcaSpawnSector[sithPlayer_gcNumSpawns] = pStart->sector;
+        sithPlayer_gcNumSpawns++;
+    }
+#endif
     if ( v2 >= 0 )
     {
         SithPlayer* playerInfo = &jkPlayer_playerInfos[0];
@@ -580,11 +604,21 @@ void sithPlayer_NewPlayer(SithThing *pPlayer)
         {
             v9 = sithMulti_GetSpawnIdx(pPlayer);
             sithThing_ExitSector(pPlayer);
+#ifdef TARGET_GAMECUBE
+            if (v9 >= 0 && v9 < sithPlayer_gcNumSpawns && sithPlayer_gcaSpawnSector[v9])
+            {
+                sithThing_SetPositionAndOrient(pPlayer, &sithPlayer_gcaSpawnOrient[v9].scale, &sithPlayer_gcaSpawnOrient[v9]);
+                sithThing_EnterSector(pPlayer, sithPlayer_gcaSpawnSector[v9], 1, 0);
+            }
+            else
+#endif
+            {
             sithThing_SetPositionAndOrient(
                 pPlayer,
                 &jkPlayer_playerInfos[v9].orient.scale,
                 &jkPlayer_playerInfos[v9].orient);
             sithThing_EnterSector(pPlayer, jkPlayer_playerInfos[v9].pInSector, 1, 0);
+            }
             sithCamera_Update(sithCamera_g_pCurCamera);
             sithPhysics_ResetThingMovement(pPlayer);
             sithWeapon_SyncPuppet(pPlayer);

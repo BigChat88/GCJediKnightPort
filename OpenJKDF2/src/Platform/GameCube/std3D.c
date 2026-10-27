@@ -142,6 +142,9 @@ static int std3D_boundTlut = -1;
 static int std3D_boundTevTrans = -1;       // textured TEV: 0 modulate, 1 translucent, -1 unknown
 static int std3D_boundBlend = -1;
 
+static size_t std3D_numDeferTris = 0; // translucent tris waiting (std3D_DeferTris)
+static void std3D_FlushDeferred(void);
+
 static inline uint16_t std3D_Rgb5a3Opaque(uint8_t r, uint8_t g, uint8_t b)
 {
     return 0x8000 | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
@@ -1002,12 +1005,14 @@ static void std3D_SubmitMenuOverlay(void)
 // every time the map moved.
 void std3D_GcDropScene(void)
 {
+    std3D_numDeferTris = 0;
     std3D_bInScene = 0;
 }
 
 int std3D_EndScene()
 {
     if (Main_bHeadless || !std3D_bInScene) return 0;
+    std3D_FlushDeferred(); // translucent things, over everything opaque
     std3D_FogOff(); // the overlays below are not part of the scene
     // Added: the overlays (HUD, crosshair) from a known GX state, not what the
     // scene's last batch left: in third person, once the sky came into view the
@@ -1097,16 +1102,71 @@ static void std3D_EmitTris(rdTri* tris, D3DVERTEX* verts, size_t j, size_t end, 
     GX_End();
 }
 
+// Added: translucent things (explosions, particles, bolts, saber blades) don't
+// write depth, so whatever opaque was drawn after them painted over them: a
+// character behind an explosion showed whole, in front of it. The game flushes
+// its face cache several times a frame (the character can come in a later
+// flush), so they're kept here and drawn after everything opaque: before the
+// depth is reset for the first-person weapon, and at the end of the scene.
+#define STD3D_MAX_DEFERRED_TRIS 1536
+static rdTri*     std3D_aDeferTris = NULL;
+static D3DVERTEX* std3D_aDeferVerts = NULL;
+
+static void std3D_DrawTriList(rdTri* tris, D3DVERTEX* verts, size_t numTris, int bDefer);
+
+static int std3D_DeferTris(rdTri* tris, D3DVERTEX* verts, size_t j, size_t end)
+{
+    if (!std3D_aDeferTris) {
+        std3D_aDeferTris = (rdTri*)malloc(STD3D_MAX_DEFERRED_TRIS * sizeof(rdTri));
+        std3D_aDeferVerts = (D3DVERTEX*)malloc(STD3D_MAX_DEFERRED_TRIS * 3 * sizeof(D3DVERTEX));
+        if (!std3D_aDeferTris || !std3D_aDeferVerts) {
+            free(std3D_aDeferTris); free(std3D_aDeferVerts);
+            std3D_aDeferTris = NULL; std3D_aDeferVerts = NULL;
+            return 0;
+        }
+    }
+    if (std3D_numDeferTris + (end - j) > STD3D_MAX_DEFERRED_TRIS)
+        return 0; // full: drawn now, as before
+    for (size_t k = j; k < end; k++) {
+        size_t n = std3D_numDeferTris++;
+        rdTri* t = &std3D_aDeferTris[n];
+        *t = tris[k];
+        std3D_aDeferVerts[n * 3 + 0] = verts[tris[k].v1];
+        std3D_aDeferVerts[n * 3 + 1] = verts[tris[k].v2];
+        std3D_aDeferVerts[n * 3 + 2] = verts[tris[k].v3];
+        t->v1 = (int32_t)(n * 3); t->v2 = (int32_t)(n * 3 + 1); t->v3 = (int32_t)(n * 3 + 2);
+    }
+    // Kept in the texture cache until drawn. Only a texture that is in it (as the
+    // draw loop checks): putting any other on the cache list corrupted the list.
+    rdDDrawSurface* tex = tris[j].texture;
+    if (tex && tex->texture_loaded && (size_t)tex->texture_id < std3D_numTex && std3D_aTex[tex->texture_id].data)
+        std3D_UpdateFrameCount(tex);
+    return 1;
+}
+
+static void std3D_FlushDeferred(void)
+{
+    if (!std3D_numDeferTris) return;
+    size_t n = std3D_numDeferTris;
+    std3D_numDeferTris = 0;
+    if (std3D_bInScene && !Main_bHeadless) {
+        std3D_LoadSceneProjection();
+        std3D_DrawTriList(std3D_aDeferTris, std3D_aDeferVerts, n, 0);
+    }
+}
+
 static void std3D_DrawRenderListReal(void)
 {
     if (Main_bHeadless || !std3D_bInScene || !GL_tmpTrisAmt || !GL_tmpVertices)
         return;
+    std3D_DrawTriList(GL_tmpTris, GL_tmpVertices, GL_tmpTrisAmt, !jkGuiBuildMulti_bRendering);
+}
+
+static void std3D_DrawTriList(rdTri* tris, D3DVERTEX* verts, size_t numTris, int bDefer)
+{
     std3D_bDrew3D = 1;
     std3D_offsetX = jkGuiBuildMulti_bRendering ? 315.0f : 0.0f;
     std3D_offsetY = jkGuiBuildMulti_bRendering ? 115.0f : 0.0f;
-
-    rdTri*     tris  = GL_tmpTris;
-    D3DVERTEX* verts = GL_tmpVertices;
 
     // The scene's vertices carry a second colour, the fog amount (only here: the
     // overlays drawn with the same format don't send it).
@@ -1117,7 +1177,7 @@ static void std3D_DrawRenderListReal(void)
     std3D_bFogBound = -1; // the TEV stages may have been changed since (underwater)
 
     size_t j = 0;
-    while (j < GL_tmpTrisAmt)
+    while (j < numTris)
     {
         // Batch consecutive tris sharing a texture and blend mode into one GX_Begin.
         rdDDrawSurface* tex = tris[j].texture;
@@ -1128,12 +1188,17 @@ static void std3D_DrawRenderListReal(void)
         int bParticle = !isTex && (tris[j].flags & RDCACHE_GC_FLAG_PARTICLE) && std3D_pDotTex;
 
         size_t end = j + 1;
-        while (end < GL_tmpTrisAmt
+        while (end < numTris
                && tris[end].texture == tris[j].texture
                && std3D_BlendClass(tris[end].flags) == blendClass
                && ((tris[end].flags ^ tris[j].flags) & (RDCACHE_GC_FLAG_PARTICLE | RDCACHE_GC_FLAG_NOFOG | RDCACHE_GC_FLAG_HORIZON)) == 0)
             end++;
         int bSky = (tris[j].flags & RDCACHE_GC_FLAG_NOFOG) != 0;
+        if (bDefer && !bSky && blendClass != STD3D_BLEND_OPAQUE && blendClass != STD3D_BLEND_ALPHA
+            && std3D_DeferTris(tris, verts, j, end)) {
+            j = end;
+            continue;
+        }
         std3D_SetFogMode(bSky ? STD3D_FOG_SKY : STD3D_FOG_WORLD,
                          blendClass == STD3D_BLEND_GLOW || blendClass == STD3D_BLEND_SOFT);
         std3D_SetSkyDepth(bSky);
@@ -1585,6 +1650,7 @@ void std3D_PurgeBitmapRefs(stdBitmap* pBitmap) {}
 int std3D_ClearZBuffer()
 {
     if (!std3D_bInScene) return 1;
+    std3D_FlushDeferred(); // the world's translucent things, with the world's depth
 
     std3D_LoadOrthoProjection();
     GX_SetColorUpdate(GX_FALSE);

@@ -22,6 +22,7 @@
 #include "Main/jkGame.h"
 #include "World/sithSector.h"
 #include "Win95/Windows.h"
+#include "Win95/std.h"
 
 #include "jk.h"
 
@@ -573,7 +574,10 @@ void jkCog_SetSaberInfo(sithCog *ctx)
 #ifdef SITH_DEBUG_STRUCT_NAMES
         jkSaber_InitializeSaberInfo(v4, v10->mat_fpath, v9->mat_fpath, base_rad, tip_rad, len, wall_sparks, blood_sparks, saber_sparks);
 #else
-        jkSaber_InitializeSaberInfo(v4, v10->mat_full_fpath, v9->mat_full_fpath, base_rad, tip_rad, len, wall_sparks, blood_sparks, saber_sparks);
+        // Added: the file names (as jkDSS sends them). The full path ("mat\x.mat")
+        // got "mat\" put in front again by the material loader and was never
+        // found: no cog could change a blade's colour (CTF teams, kyle_m.cog).
+        jkSaber_InitializeSaberInfo(v4, (char*)stdFileFromPath(v10->mat_full_fpath), (char*)stdFileFromPath(v9->mat_full_fpath), base_rad, tip_rad, len, wall_sparks, blood_sparks, saber_sparks);
 #endif
         if ( COG_SHOULD_SYNC(ctx))
         {
