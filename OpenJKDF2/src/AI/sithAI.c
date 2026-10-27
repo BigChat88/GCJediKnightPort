@@ -432,6 +432,11 @@ void sithAI_EmitEvent(SithAIControlBlock *pLocal, int event, intptr_t pObject)
     uint32_t v7; // ebx
     int old_flags; // [esp+14h] [ebp+4h]
 
+    // Added: callers pass thing->actor unchecked; an actor without an AI block
+    // (MotS s2l1_palace) read pLocal->pClass through NULL.
+    if (!pLocal)
+        return;
+
     for ( ; pLocal->pClass; event = SITHAI_MODE_UNK100 )
     {
         if ( !pLocal->thing )

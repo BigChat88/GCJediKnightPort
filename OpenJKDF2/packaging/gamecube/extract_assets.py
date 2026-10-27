@@ -334,8 +334,12 @@ def main():
     if missing:
         print("missing required files: " + ", ".join(missing), file=sys.stderr)
         return 1
-    if args.gob_order and os.path.exists(args.gob_order) and not args.mots:
-        apply_gob_order(root, args.gob_order)
+    # Mysteries of the Sith has its own recording (gob_order_mots.txt, next to it).
+    order_file = args.gob_order
+    if args.mots and order_file:
+        order_file = os.path.join(os.path.dirname(order_file), "gob_order_mots.txt")
+    if order_file and os.path.exists(order_file):
+        apply_gob_order(root, order_file)
     write_wav_info(root)
     # Writable dirs the engine expects to exist (saves are redirected later).
     os.makedirs(os.path.join(root, "player"), exist_ok=True)

@@ -7,6 +7,7 @@ The image must contain a 64-byte /autoboot.txt (make_gcm.py --autoboot-slot),
 which is patched in place before each run.
 
     python record_access.py openjkdf2.dol openjkdf2.iso -o gob_order.txt
+    python record_access.py openjkdf2.dol openjkm.iso -o gob_order_mots.txt --mots
 
 Output: one "<gob> <file>" line per file, static.jkl first, then levels in episode
 order, each file listed once (first use). extract_assets.py --gob-order uses it.
@@ -30,6 +31,14 @@ LEVELS = [
     "16bescapeship.jkl", "17bsarris.jkl", "20bboc.jkl", "21bjerec.jkl",
 ]
 
+# Mysteries of the Sith (episode jkm.goo), in episode order.
+MOTS_LEVELS = [
+    "s1l1_rebelbase.jkl", "s1l2_astcrust.jkl", "s1l3_astcore.jkl", "s1l4_astdestruct.jkl",
+    "s2l1_palace.jkl", "s2l2a_katraasii.jkl", "s2l2b_katraasii.jkl", "s2l4_stronghold.jkl",
+    "s4l1_escortship.jkl", "s4l2_shipyards.jkl", "s4l3_kaerobanibase.jkl",
+    "s5l2_darkswamp.jkl", "s5l3_uppersith.jkl", "s5l4_lowersith.jkl",
+]
+
 
 def find_disc_file(iso, name):
     with open(iso, "rb") as f:
@@ -51,7 +60,9 @@ def run_level(work, dol, iso, secs):
     cmd = ["docker", "run", "--rm", "--shm-size=1g",
            "-e", "DOLPHIN_ARGS=-C Dolphin.Core.FastDiscSpeed=True",
            "-v", f"{work}:/work", "openjkdf2-dolphin",
-           f"/work/{dol}", f"/work/{iso}", str(secs)]
+           # The test image's Dolphin boots disc images only: the image (which
+           # carries the dol) is both what's booted and the disc.
+           f"/work/{iso}", f"/work/{iso}", str(secs)]
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
     out = subprocess.run(cmd, capture_output=True, env=env).stdout.decode("utf-8", "replace")
     # Dolphin renders OSReport text as Shift-JIS, where 0x5C (backslash) is a yen sign.
@@ -77,6 +88,7 @@ def main():
     ap.add_argument("--work", default=".", help="directory mounted as /work")
     ap.add_argument("--secs", type=int, default=100, help="emulation time per level")
     ap.add_argument("--only", nargs="*", help="record just these levels")
+    ap.add_argument("--mots", action="store_true", help="Mysteries of the Sith levels (an openjkm image)")
     args = ap.parse_args()
 
     iso_path = os.path.join(args.work, args.iso)
@@ -89,7 +101,7 @@ def main():
                 seen.add(e)
                 order.append(e)
 
-    for level in (args.only or LEVELS):
+    for level in (args.only or (MOTS_LEVELS if args.mots else LEVELS)):
         with open(iso_path, "r+b") as f:
             f.seek(slot_off)
             f.write(level.encode().ljust(slot_size, b" "))
