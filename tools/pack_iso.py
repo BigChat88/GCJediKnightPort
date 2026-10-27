@@ -17,6 +17,11 @@ A CD image is a data track (.bin with its .cue, as ripped "one file per track",
 or a plain .iso). Keep each disc in its own folder: the .cue next to the data
 track is how the CD audio tracks (the soundtrack) are found.
 
+Optional: a JkGfxMod material pack with lightsaber blades (jkgm/materials/.../
+metadata.json replacing mat/saber*.mat, e.g. "JK Neural Upscale Special Effect
+Annex") anywhere in those folders: its blades are baked into the images
+(make_saber_mats.py).
+
 The engine comes from engine/ (release bundle) or, in a source checkout,
 OpenJKDF2/build_gamecube/ (build it first, see README.md).
 
@@ -181,8 +186,12 @@ def main():
         if run(extract) != 0:
             failed.append(key)
             continue
-        build_sndbank(os.path.join(work, "mots" if key == "mots" else "jk1"),
-                      os.path.join(args.out, "work"), args.clean)
+        game_dir = os.path.join(work, "mots" if key == "mots" else "jk1")
+        build_sndbank(game_dir, os.path.join(args.out, "work"), args.clean)
+        # Lightsaber blades from a JkGfxMod pack in the same folders, if there is one.
+        if run([sys.executable, os.path.join(PACKAGING, "make_saber_mats.py"), game_dir, *args.gamedata]) != 0:
+            print("warning: the saber blades from the JkGfxMod pack could not be made; "
+                  "the game's own are used")
         if run([sys.executable, os.path.join(PACKAGING, "make_gcm.py"), dol, work,
                 "-o", iso, "--apploader", apploader, *game["args"]]) != 0:
             failed.append(key)

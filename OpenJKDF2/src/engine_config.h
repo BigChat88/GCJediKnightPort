@@ -280,7 +280,7 @@
 #define RDPUPPET_MAX_TRACKS (4)
 #define RDPUPPET_MAX_NODES (64)
 
-#ifdef SDL2_RENDER
+#if defined(SDL2_RENDER) || defined(TARGET_RETRO_HOMEBREW) // Added: homebrew, as jkGuiJoystick's elements
 #define JOYSTICK_MAX_STRS (6)
 #else
 #define JOYSTICK_MAX_STRS (3)

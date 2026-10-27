@@ -394,7 +394,11 @@ LABEL_47:
     aEnts = (jkEpisodeEntry *)JK_ALLOC(aEnts_size);
     a1->paEntries = aEnts;
     if ( !aEnts )
+    {
         Windows_GameErrorMsgbox("ERR_OUT_OF_MEMORY");
+        pHS->fileClose((intptr_t)v2); // Added: it went on to clear a NULL pointer
+        return 0;
+    }
     _memset(aEnts, 0, aEnts_size);
     v16 = 0;
     v17 = 1;

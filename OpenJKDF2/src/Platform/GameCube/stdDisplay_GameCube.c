@@ -414,6 +414,10 @@ tVBuffer* stdDisplay_VBufferNew(tRasterInfo *fmt, int create_ddraw_surface, int 
 
     if (fmt->format.bpp == 16) {
         out->format.size *= 2;
+        // Added: rowSize is in bytes (the readers step through 16-bit texels
+        // with rowSize / 2): rows of a 16-bit texture were read half a row
+        // apart, vertical stripes coming out diagonal.
+        out->format.rowSize = fmt->width * 2;
     }
 
     //out->format.width = 0;

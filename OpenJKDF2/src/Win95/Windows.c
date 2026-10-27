@@ -336,6 +336,13 @@ void Windows_GameErrorMsgbox(const char *a1, ...)
     vsnprintf(tmp, 0x200u, a1, va);
     va_end(va);
     jk_printf("FATAL ERROR: %s\n", tmp);
+#ifdef TARGET_GAMECUBE
+    // Added: on the TV, not only in the log (the screen just froze).
+    {
+        extern void gcSystem_Panic(const char* fmt, ...) __attribute__((noreturn));
+        gcSystem_Panic("Fatal error: %s", tmp);
+    }
+#endif
     while(1);
 #endif
 #ifdef TARGET_TWL

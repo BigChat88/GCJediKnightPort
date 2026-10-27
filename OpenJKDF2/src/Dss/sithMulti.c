@@ -13,6 +13,7 @@
 #include "Dss/sithDSSThing.h"
 #include "Dss/sithDSS.h"
 #include "Dss/sithDSSCog.h"
+#include "Dss/jkDSS.h"
 #include "World/sithSoundClass.h"
 #include "stdPlatform.h"
 #include "World/sithSector.h"
@@ -300,6 +301,17 @@ int sithMulti_GetSpawnIdx(SithThing *pPlayerThing)
     uint32_t v11; // [esp+10h] [ebp-90h]
     int v12[32]; // [esp+20h] [ebp-80h] BYREF
     int realMaxSpawns = jkPlayer_maxPlayers;
+#ifdef TARGET_GAMECUBE
+    // Added: the map's start points (sithPlayer_gcaSpawn*), not the player slots.
+    uint32_t numSpawns = sithPlayer_gcNumSpawns ? (uint32_t)sithPlayer_gcNumSpawns : jkPlayer_maxPlayers;
+    realMaxSpawns = (int)numSpawns;
+#define SITHMULTI_SPAWN_SECTOR(i) (sithPlayer_gcNumSpawns ? sithPlayer_gcaSpawnSector[i] : jkPlayer_playerInfos[i].pInSector)
+#define SITHMULTI_SPAWN_POS(i)    (sithPlayer_gcNumSpawns ? &sithPlayer_gcaSpawnOrient[i].scale : &jkPlayer_playerInfos[i].orient.scale)
+#else
+    uint32_t numSpawns = jkPlayer_maxPlayers;
+#define SITHMULTI_SPAWN_SECTOR(i) (jkPlayer_playerInfos[i].pInSector)
+#define SITHMULTI_SPAWN_POS(i)    (&jkPlayer_playerInfos[i].orient.scale)
+#endif
 
     // Added: Spawn at start in co-op.
     if (sithNet_MultiModeFlags & MULTIMODEFLAG_COOP) {
@@ -313,10 +325,10 @@ int sithMulti_GetSpawnIdx(SithThing *pPlayerThing)
     v11 = 0;
     v4 = v12;
     v5 = pPlayerThing->actorParams.pPlayer->respawnMask;
-    for (v3 = 0; v3 < jkPlayer_maxPlayers; v3++)
+    for (v3 = 0; v3 < numSpawns; v3++)
     {
         // Added: HACK for weird maps w/ <32 spawn points
-        if (!jkPlayer_playerInfos[v3].pInSector && v3 < realMaxSpawns) {
+        if (!SITHMULTI_SPAWN_SECTOR(v3) && v3 < realMaxSpawns) {
             realMaxSpawns = v3;
         }
 
@@ -339,9 +351,9 @@ int sithMulti_GetSpawnIdx(SithThing *pPlayerThing)
         v8 = v12[v7];
         v8 = v8 % realMaxSpawns; // Added: HACK for weird maps w/ <32 spawn points
         sithCollision_SearchForCollisions(
-            jkPlayer_playerInfos[v8].pInSector,
+            SITHMULTI_SPAWN_SECTOR(v8),
             0,
-            &jkPlayer_playerInfos[v8].orient.scale,
+            SITHMULTI_SPAWN_POS(v8),
             &rdroid_zeroVector3,
             0.0,
             pPlayerThing->moveSize,
@@ -362,6 +374,8 @@ int sithMulti_GetSpawnIdx(SithThing *pPlayerThing)
         v7 = (v7 + 1) % v2;
     }
     return v8;
+#undef SITHMULTI_SPAWN_SECTOR
+#undef SITHMULTI_SPAWN_POS
 }
 
 void sithMulti_SyncScores()
@@ -672,6 +686,20 @@ int sithMulti_ProcessWelcome(SithMessage *pMsg)
         if ( sithPlayer_g_pLocalPlayerThing->pCog )
             sithCog_SendMessage(sithPlayer_g_pLocalPlayerThing->pCog, SITH_MESSAGE_STARTUP, SENDERTYPE_SYSTEM, 0, 0, 0, 0);
         sithPlayer_NewPlayer(sithPlayer_g_pLocalPlayerThing);
+
+        // The character's look (model, saber colour) went out at level start too,
+        // for the thing that was the local player then: the host's. Send it for
+        // this player's own, again every couple of seconds (jkDSS_JKM1) until the
+        // host echoes it back: the saber always stayed the default green.
+        extern int jkDSS_005aec8c;
+        jkDSS_005aec8c = 1;
+        jkDSS_wrap_SendSaberInfo_alt();
+    }
+    else if ( sithPlayer_g_pLocalPlayerThing )
+    {
+        // Added: JK has the same level start send for the host's thing; this
+        // player's own look (model, saber colour) goes out now.
+        jkDSS_wrap_SendSaberInfo_alt();
     }
     sithEvent_RegisterTask(2, sithMulti_CheckPlayers, sithNet_tickrate, 1);
     sithMessage_StopProcessMessages();

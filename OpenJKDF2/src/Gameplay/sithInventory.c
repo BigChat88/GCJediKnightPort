@@ -1319,7 +1319,7 @@ int sithInventory_HandleInvSkillKeys(SithThing *player, flex_t deltaSecs)
                             v30 = 0;
                         else
                             v30 = &sithInventory_g_aTypes[v27];
-                        v31 = v30->flags;
+                        v31 = v30 ? v30->flags : 0; // Added: a key bound to an unregistered bin
                         if ( (v31 & 0x100) != 0 )
                         {
                             // TODO MOTS added some stuff here?

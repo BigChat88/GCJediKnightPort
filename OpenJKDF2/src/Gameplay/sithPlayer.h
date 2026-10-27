@@ -39,6 +39,12 @@ void sithPlayer_Startup(int idx);
 void sithPlayer_Open();
 void sithPlayer_Close();
 void sithPlayer_PlacePlayers(SithWorld *pWorld);
+#ifdef TARGET_GAMECUBE
+#define SITHPLAYER_GC_MAX_SPAWNS 32
+extern rdMatrix34  sithPlayer_gcaSpawnOrient[SITHPLAYER_GC_MAX_SPAWNS];
+extern SithSector* sithPlayer_gcaSpawnSector[SITHPLAYER_GC_MAX_SPAWNS];
+extern int         sithPlayer_gcNumSpawns;
+#endif
 int sithPlayer_GetBinItemActive(int binIdx);
 int sithPlayer_IsInvItemAvailable(int binIndex);
 void sithPlayer_SetBinItemActive(int binIdx, int bEnabled);

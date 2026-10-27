@@ -654,7 +654,7 @@ void sithCogFunctionAI_AIRemoveAlignmentPriority(sithCog *pCog)
         return;
     }
 
-    if ((-1 < iVar1) && (iVar1 < 11)) 
+    if ((-1 < iVar1) && (iVar1 < 10)) // Added: was < 11, past the 10 alignments
     {
         cog_flex_t tmp = 1.0;
         iVar4 = -1000;

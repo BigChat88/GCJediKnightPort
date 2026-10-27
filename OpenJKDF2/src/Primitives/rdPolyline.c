@@ -15,6 +15,18 @@
 static rdVector3 polylineVerts[32]; // idk the size on this
 static rdVector3 rdPolyline_FaceVerts[32];
 
+#ifdef TARGET_GAMECUBE
+// Added: blades baked from a JkGfxMod pack (packaging/gamecube/make_saber_mats.py)
+// mark their texture: they are emissive light, drawn additively and unlit.
+#define RDPOLYLINE_GC_GLOW_MARKER 0x47434C57 // "GCLW" in rdTextureHeader.unk_0c
+
+static int rdPolyline_GcIsGlowMaterial(rdMaterial* pMat)
+{
+    return pMat && pMat->num_textures && pMat->textures
+        && pMat->textures[0].unk_0c == RDPOLYLINE_GC_GLOW_MARKER;
+}
+#endif
+
 rdPolyline* rdPolyline_New(char *polyline_fname, char *material_fname, char *material_fname2, flex_t length, flex_t base_rad, flex_t tip_rad, int lightmode, int texmode, int sortingmethod, flex_t extraLight)
 {
     rdPolyline* polyline;
@@ -461,6 +473,11 @@ void rdPolyline_DrawFace(rdThing *pLine, rdFace *pFace, rdVector3 *aVertices, rd
     }
 #endif
     
+#ifdef TARGET_GAMECUBE
+    int bGcGlow = rdPolyline_GcIsGlowMaterial(pFace->material);
+    if (bGcGlow)
+        procEntry->lightingMode = RD_LIGHTMODE_FULLYLIT; // the blade gives light, it isn't lit
+#endif
     int procFaceFlags = 1;
     if ( procEntry->geometryMode >= 4 )
         procFaceFlags = 3;
@@ -470,6 +487,10 @@ void rdPolyline_DrawFace(rdThing *pLine, rdFace *pFace, rdVector3 *aVertices, rd
     procEntry->light_flags = 0;
     procEntry->wallCel = pLine->wallCel;
     procEntry->type = pFace->type;
+#ifdef TARGET_GAMECUBE
+    if (bGcGlow)
+        procEntry->gcEffect = 2; // additive (std3D: RDCACHE_GC_FLAG_GLOW)
+#endif
     procEntry->extralight = pFace->extraLight;
     procEntry->material = pFace->material;
 
