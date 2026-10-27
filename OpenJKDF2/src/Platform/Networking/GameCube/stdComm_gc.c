@@ -328,7 +328,9 @@ static uint32_t gcComm_statOtherIp = 0, gcComm_statOtherPort = 0, gcComm_statLas
 #define GCCOMM_RXQ_SLOTS 96
 #define GCCOMM_RXQ_SLOT  (GCCOMM_HDR + GCCOMM_FRAG + 64)
 typedef struct gcCommRxSlot { int32_t len; uint32_t ip; uint16_t port; } gcCommRxSlot;
-static uint8_t       gcComm_aRxQData[GCCOMM_RXQ_SLOTS][GCCOMM_RXQ_SLOT];
+// Added: ~120 KiB, only while a game socket is open (gcComm_SetGameSock); it was
+// a static array, taken from every level's memory even without a network game.
+static uint8_t     (*gcComm_aRxQData)[GCCOMM_RXQ_SLOT] = NULL;
 static gcCommRxSlot  gcComm_aRxQ[GCCOMM_RXQ_SLOTS];
 static volatile uint32_t gcComm_rxqHead = 0, gcComm_rxqTail = 0; // head: next write, tail: next read
 static uint32_t      gcComm_statRxqDropped = 0;
@@ -366,7 +368,7 @@ static void gcComm_RxDrainLocked(void)
     while (gcComm_sock >= 0) {
         struct sockaddr_in from;
         socklen_t flen = sizeof(from);
-        int bFull = gcComm_rxqHead - gcComm_rxqTail >= GCCOMM_RXQ_SLOTS;
+        int bFull = !gcComm_aRxQData || gcComm_rxqHead - gcComm_rxqTail >= GCCOMM_RXQ_SLOTS;
         uint32_t slot = gcComm_rxqHead % GCCOMM_RXQ_SLOTS;
         uint8_t* dst = bFull ? gcComm_rxScratch : gcComm_aRxQData[slot];
         s32 n = net_recvfrom(gcComm_sock, dst, GCCOMM_RXQ_SLOT, 0, (struct sockaddr*)&from, &flen);
@@ -392,6 +394,11 @@ void stdComm_Gc_Pump(void)
 static void gcComm_SetGameSock(s32 s)
 {
     gcComm_RxLock();
+    if (s >= 0 && !gcComm_aRxQData)
+    {
+        gcComm_aRxQData = malloc(GCCOMM_RXQ_SLOTS * GCCOMM_RXQ_SLOT);
+        if (!gcComm_aRxQData) printf("gcComm: no memory for the receive queue\n");
+    }
     gcComm_sock = s;
     gcComm_rxqHead = gcComm_rxqTail = 0;
     gcComm_RxUnlock();
@@ -405,6 +412,8 @@ static void gcComm_CloseGameSock(void)
     gcComm_CloseUdp(gcComm_sock);
     gcComm_sock = -1;
     gcComm_rxqHead = gcComm_rxqTail = 0;
+    free(gcComm_aRxQData);
+    gcComm_aRxQData = NULL;
     gcComm_RxUnlock();
     gcComm_statRx = gcComm_statBad = gcComm_statOther = gcComm_statRxqDropped = gcComm_statIdleDropped = 0;
     gcComm_statSendErrors = 0;

@@ -235,6 +235,7 @@ LABEL_11:
                     startMsecs = stdPlatform_GetTimeMsec();
                     if ( !sithWorld_aSectionParsers[v3].funcptr(pWorld, 0) ) {
                         // Added
+                        v6 = (unsigned int)(stdPlatform_GetTimeMsec() - startMsecs); // Added: was printed unset
                         _sprintf(tmp, "%f seconds to parse section %s -- FAILED!\n", (flex32_t)v6 * 0.001, section);
                         sithConsole_PrintString(tmp);
 #ifdef TARGET_RETRO_HOMEBREW

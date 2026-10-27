@@ -123,6 +123,10 @@ macro(plat_initialize)
     # optimizer from exploiting strict aliasing.
     add_compile_options(-fno-strict-aliasing)
     add_compile_options(-O2)
+    # No unwind tables for C: nothing unwinds (the crash screen walks the back
+    # chain), and they were ~250 KiB of .eh_frame loaded into RAM with the DOL.
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:-fno-asynchronous-unwind-tables>)
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:-fno-unwind-tables>)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti -fno-exceptions")
     add_link_options(-Wl,--gc-sections)
 endmacro()

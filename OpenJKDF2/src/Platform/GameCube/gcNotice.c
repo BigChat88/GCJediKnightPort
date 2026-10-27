@@ -53,7 +53,7 @@ void gcNotice_Show(const char* text)
     if (!font) return;
     char16_t wtext[64];
     int len = 0;
-    for (; text[len] && len < 63; len++) wtext[len] = (unsigned char)text[len];
+    for (; len < 63 && text[len]; len++) wtext[len] = (unsigned char)text[len];
     wtext[len] = 0;
 
     int pitch = vbuf->format.rowSize;
